@@ -3,7 +3,7 @@ AutoDRC is an AI-powered system designed to assist with debugging and repairing 
 
 The project aims to identify violation patterns, analyze their root causes, suggest appropriate repairs, and verify proposed changes through design verification tools.
 
-## 🎯 Objectives
+## Objectives
 
 - **DRC Analysis:** Parse and organize DRC violations.
 - **Root-Cause Analysis:** Identify potential causes of violations.
@@ -11,7 +11,7 @@ The project aims to identify violation patterns, analyze their root causes, sugg
 - **Verification:** Validate repairs using DRC and LVS checks.
 - **Learning from Past Fixes:** Reuse knowledge from previously successful repairs.
 
-## 🏗️ Proposed Workflow
+## Proposed Workflow
 
 1. Extract DRC violations from the layout verification tool.
 2. Group related violations and analyze their root causes.
@@ -20,20 +20,17 @@ The project aims to identify violation patterns, analyze their root causes, sugg
 5. Re-run verification to evaluate the results.
 6. Keep successful repairs and roll back unsuccessful changes.
 
-## 🛠️ Technology Stack
+## Technology Stack
 
 The technology stack is under development and will be finalized as the project progresses.
 
-## 🚧 Project Status
+## Project Status
 
 **Currently in development.**
 
 This project is part of a graduation project exploring AI-assisted debugging and autonomous repair for analog IC layouts.
 
-## 👥 Contributors
+## Contributors
 
-Developed by the SiFix project team.
+Developed by the AutoDRC project team.
 
-## 📄 License
-
-To be determined.
