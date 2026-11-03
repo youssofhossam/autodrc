@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "example": {
+      "transport": "stdio",
+      "command": "/absolute/path/to/python",
+      "args": ["-m", "your_mcp_server"],
+      "env": {},
+      "cwd": null
+    }
+  }
+}
