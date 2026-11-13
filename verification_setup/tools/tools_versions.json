@@ -1,0 +1,21 @@
+{
+  "generated_at_utc": "2026-11-13T17:39:38.168050+00:00",
+  "project": "verification_setup",
+  "tools": {
+    "Magic": {
+      "version": "8.3.691",
+      "path": "/usr/local/bin/magic",
+      "status": "VERSION REPORTED"
+    },
+    "Netgen": {
+      "version": "UNKNOWN",
+      "path": "/usr/local/bin/netgen",
+      "status": "VERSION QUERY UNCONFIRMED"
+    },
+    "SKY130_PDK": {
+      "version": "0fe599b2afb6708d281543108caf8310912f54af",
+      "path": "/home/haytham/.volare/volare/sky130/versions/0fe599b2afb6708d281543108caf8310912f54af/sky130A",
+      "status": "FOUND"
+    }
+  }
+}

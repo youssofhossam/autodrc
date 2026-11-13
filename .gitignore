@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# sky130 PDK - 1.1 GB, install separately (e.g. volare / ciel / OpenPDK)
+verification_setup/tools/pdk/
+
+# local absolute-path symlink, not portable
+verification_setup/data/selected_layouts.csv

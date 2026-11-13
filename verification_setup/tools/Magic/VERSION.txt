@@ -1,0 +1,5 @@
+TOOL: Magic
+VERSION: 8.3.691
+PATH: /usr/local/bin/magic
+STATUS: VERSION REPORTED
+SHA256: N/A
