@@ -1,6 +1,6 @@
 **Graduation Project – Progress Update**
 
-We started by investigating and running the original **OSIRIS verification flow**, with the goal of preparing a reliable dataset for benchmarking our DRC closure agent.
+We started by investigating and running the original **verification flow**, with the goal of preparing a reliable dataset for benchmarking our DRC closure agent.
 
 During this process, we identified several issues and limitations in the original Adapter and Validator implementations, so we developed improved versions of both.
 
