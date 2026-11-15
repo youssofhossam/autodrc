@@ -1,8 +1,8 @@
 """A small asyncio worker thread for GUI applications.
 
-Tkinter must be driven from the main thread. This worker owns a separate event
-loop so the GUI can keep painting, animating, and responding to input while
-Gemini and MCP work runs in the background.
+Qt widgets must be driven from the main thread. This worker owns a separate
+event loop so the GUI can keep painting and responding to input while Gemini
+and MCP work runs in the background.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ class AsyncWorker:
     def __init__(self) -> None:
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
-            target=self._run, name="agentic-chatbot-worker", daemon=True
+            target=self._run, name="autodrc-worker", daemon=True
         )
         self._stopped = False
         self._thread.start()

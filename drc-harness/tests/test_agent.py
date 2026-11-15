@@ -350,6 +350,39 @@ async def test_shutdown_closes_mcp_and_llm() -> None:
 
 
 @pytest.mark.asyncio
+async def test_history_snapshot_can_be_restored() -> None:
+    llm = ScriptedLLM([text_response("First answer."), text_response("Second answer.")])
+    agent = AgentController(llm, FakeMCP())
+
+    await agent.send_message("First question")
+    snapshot = agent.snapshot_history()
+    await agent.send_message("Second question")
+    assert len(agent.history) == 4
+
+    agent.restore_history(snapshot)
+    assert [content.parts[0].text for content in agent.history] == [
+        "First question",
+        "First answer.",
+    ]
+    assert agent.snapshot_history() == snapshot
+    assert agent.snapshot_history()[0] is not snapshot[0]
+
+    agent.restore_history(None)
+    assert agent.history == ()
+
+
+def test_model_can_be_changed_between_requests() -> None:
+    agent = AgentController(ScriptedLLM([text_response("ok")]), FakeMCP())
+
+    assert agent.model == "scripted-model"
+    agent.set_model("another-model")
+    assert agent.model == "another-model"
+
+    with pytest.raises(AgentError, match="cannot be empty"):
+        agent.set_model("  ")
+
+
+@pytest.mark.asyncio
 async def test_only_discovered_tools_are_exposed() -> None:
     llm = ScriptedLLM([text_response("ok")])
     mcp = FakeMCP(tools=[make_tool("alpha"), make_tool("beta")])

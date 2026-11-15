@@ -1,9 +1,9 @@
-# Agentic DRC Harness
+# autodrc
 
-A small desktop chatbot that shows how an LLM can **choose and call tools on a
-local MCP server**. It uses Tkinter, Google Gemini's native function calling,
-and the official MCP Python SDK. There is no agent framework: the loop is
-implemented directly in `app/agent/controller.py`.
+autodrc is a small desktop chatbot that shows how an LLM can **choose and call
+tools on a local MCP server**. It uses PySide6 (Qt 6), Google Gemini's native
+function calling, and the official MCP Python SDK. There is no agent framework:
+the loop is implemented directly in `app/agent/controller.py`.
 
 The configured MCP server is the existing local `klink.mcp` server. Its tools
 are discovered at runtime; no tool names or schemas are hardcoded in the
@@ -13,16 +13,21 @@ application.
 
 ## What you get
 
-- A scrollable chat window with distinct user, assistant, tool, and error
-  messages.
+- A dark, native Qt chat window with a collapsible conversation sidebar,
+  distinct user/assistant messages, safe Markdown rendering, and syntax-
+  highlighted code blocks.
 - An agentic loop: Gemini can request one or many tools, receive their results,
   and continue until it produces a final answer.
 - Live MCP tool discovery over STDIO.
+- Collapsible tool activity cards showing server, tool, arguments, state
+  (pending/running/completed/failed), and results.
 - A confirmation dialog before tool execution (on by default).
 - JSON Schema validation of every tool call.
-- A responsive GUI: all Gemini/MCP work runs on a background asyncio thread.
+- A responsive GUI: all Gemini/MCP work runs on a background asyncio thread and
+  reaches Qt as signals.
+- Friendly inline error cards plus a rotating technical log file.
 - Clean shutdown of the MCP server process and the Gemini client.
-- Unit tests with mocked Gemini/MCP responses and a real Tkinter smoke test.
+- Unit tests with mocked Gemini/MCP responses and offscreen Qt GUI tests.
 
 ---
 
@@ -30,14 +35,16 @@ application.
 
 ```mermaid
 flowchart LR
-    subgraph GUI["Main thread — Tkinter"]
-        Chat["Chat history"]
-        Input["Input + Send"]
-        Status["Status / spinner"]
-        Queue["thread-safe queue.Queue"]
+    subgraph GUI["Main thread — Qt / PySide6"]
+        Chat["Chat view + tool cards"]
+        Sidebar["Conversation sidebar"]
+        Input["Composer + Send"]
+        Status["Status pill / banner"]
+        Dialogs["Settings / confirmation"]
     end
 
     subgraph Worker["Background thread — asyncio event loop"]
+        Bridge["AgentBridge<br/>Qt signals"]
         Agent["AgentController<br/>manual agentic loop"]
         LLM["GeminiClient<br/>google-genai"]
         MCP["MCPClient<br/>tool registry"]
@@ -50,7 +57,8 @@ flowchart LR
         KLayout["KLayout / klink<br/>127.0.0.1:8765"]
     end
 
-    Input -->|submit coroutine| Agent
+    Input -->|submit coroutine| Bridge
+    Bridge -->|submit coroutine| Agent
     Agent -->|history + declarations| LLM
     LLM -->|HTTPS| Gemini
     Gemini -->|text / function_call| LLM
@@ -58,14 +66,17 @@ flowchart LR
     MCP --> Conn
     Conn -->|JSON-RPC over stdin/stdout| Server
     Server -.->|optional connection| KLayout
-    Agent -->|AgentEvent| Queue
-    Queue -->|poll every 50 ms| Chat
+    Agent -->|AgentEvent| Bridge
+    Bridge -->|Qt signals| Chat
     Status --- Worker
 ```
 
 The GUI never calls Gemini or MCP directly. It only talks to the agent through
-`start()`, `send_message()`, `clear()`, and `shutdown()`. Tool activity arrives
-as `AgentEvent` objects. This keeps the GUI replaceable.
+`start()`, `send_message()`, `clear()`, `shutdown()`, plus small helpers to
+snapshot/restore history and change the model. Tool activity arrives as
+`AgentEvent` objects. `AgentBridge` runs on the GUI thread, submits coroutines to
+the worker loop, and re-emits worker results as Qt signals, so no Qt widget is
+touched from a non-GUI thread. This keeps the GUI replaceable.
 
 The MCP layer has **no Gemini imports**. The Gemini layer has **no MCP SDK
 imports**. The agent is the only place that understands both sides.
@@ -88,8 +99,18 @@ imports**. The agent is the only place that understands both sides.
 │   ├── mcp_client/
 │   │   └── client.py           # STDIO connection, discovery, tool calls
 │   └── gui/
-│       ├── chatbot.py          # Tkinter UI and confirmation dialog
-│       └── worker.py           # background asyncio thread
+│       ├── window.py           # main window and application state
+│       ├── sidebar.py          # conversation list and status footer
+│       ├── chat_view.py        # message widgets, Markdown view, tool cards
+│       ├── markdown.py         # safe Markdown renderer and highlighting
+│       ├── composer.py         # auto-growing input
+│       ├── dialogs.py          # settings, confirmation, startup errors
+│       ├── bridge.py           # Qt signals over the asyncio worker
+│       ├── worker.py           # background asyncio thread
+│       ├── theme.py            # dark palette, fonts, stylesheet
+│       ├── icons.py            # painted icons and app logo
+│       ├── models.py           # transcript models and AppInfo
+│       └── protocol.py         # ChatAgent protocol
 ├── tests/
 ├── .env.example
 ├── mcp_servers.example.json
@@ -367,14 +388,19 @@ The suite covers:
 | Unavailable MCP server | `test_unavailable_server_raises_connection_error`, `test_unavailable_mcp_server_fails_cleanly` |
 | Iteration limit | `test_iteration_limit_is_enforced` |
 | Context across messages | `test_conversation_context_preserved_across_messages` |
-| GUI responsiveness | `test_gui_stays_responsive_and_displays_final_answer` |
+| History snapshot / restore | `test_history_snapshot_can_be_restored` |
+| Model switching | `test_model_can_be_changed_between_requests` |
+| GUI turn + tool activity | `test_window_connects_and_runs_a_turn_with_tool_activity` |
+| GUI conversation switching | `test_new_chat_and_restore_preserve_transcript` |
+| GUI error handling | `test_turn_failure_is_shown_inline_without_crashing` |
 | Schema conversion | `tests/test_schema_conversion.py` |
+| Markdown rendering and escaping | `tests/test_markdown.py` |
 | Unknown/invalid/malformed calls | agent tests |
 | Confirmation denial | `test_user_can_deny_a_tool_call` |
 
-MCP and Gemini are mocked in the agent tests. The GUI test uses a fake agent and
-skips itself if no display is available. No dummy MCP server is created for the
-test suite.
+MCP and Gemini are mocked in the agent tests. GUI tests use a fake agent with
+offscreen Qt, so they run without a display. No dummy MCP server is created for
+the test suite.
 
 The optional live check against the real `klink.mcp` server is:
 
@@ -434,9 +460,19 @@ startup error. Check that `/home/ig/sky130-env/bin/python` exists and that
 The MCP server is running but KLayout/klink is not. Start KLayout with the klink
 plugin. Until then, only tools that do not require the live session will work.
 
-**`Could not start the Tkinter GUI`**  
-Make sure a display is available (`echo $DISPLAY`) and install `python3-tk` if
-needed.
+**`Could not start the Qt GUI: no display was detected`**
+Run the application in a desktop session, or set `QT_QPA_PLATFORM`. Check that
+`DISPLAY` or `WAYLAND_DISPLAY` is set.
+
+**Qt cannot load the `xcb` platform plugin**
+Install the missing X11 client libraries. On Ubuntu/Debian, Qt 6.5+ specifically
+needs:
+
+```bash
+sudo apt install libxcb-cursor0
+```
+
+Alternatively, run under Wayland with `QT_QPA_PLATFORM=wayland`.
 
 **A tool keeps being called until the iteration limit**  
 Inspect the tool result in the transcript. Gemini may be retrying because the
@@ -445,7 +481,7 @@ understanding the loop; the limit is a safety net.
 
 **The tool result is cut off**  
 `MAX_TOOL_RESULT_CHARS` controls what is sent to Gemini. The GUI independently
-caps display at 4,000 characters per result.
+caps display at 8,000 characters per result.
 
 ---
 
@@ -459,8 +495,9 @@ caps display at 4,000 characters per result.
   dataclasses. The Gemini layer maps those to declarations and API calls.
 - **GUI boundary.** The GUI knows only the `ChatAgent` protocol and event
   dataclasses. It does not import `google-genai` or the MCP SDK.
-- **Thread boundary.** Tkinter is single-threaded. The worker thread only
-  enqueues messages; the main thread polls with `after()`.
+- **Thread boundary.** Qt widgets live on the main thread. `AgentBridge` submits
+  coroutines to the asyncio worker and re-emits results as Qt signals; widget
+  updates never happen from the worker thread.
 - **No hidden execution.** `AutomaticFunctionCallingConfig(disable=True)` and
   the explicit tool registry make the agentic loop auditable.
 
@@ -468,7 +505,7 @@ caps display at 4,000 characters per result.
 
 - STDIO transport only.
 - Non-streaming responses; the UI shows progress but not token-by-token text.
-- One in-memory conversation, no persistence.
+- In-memory conversations with no persistence across launches.
 - Tools only; MCP prompts/resources are not exposed.
 - The JSON Schema converter supports common keywords, not the entire standard.
 - Very large tool sets consume context. The server exposes 196 tools when

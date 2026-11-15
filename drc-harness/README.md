@@ -1,13 +1,24 @@
-# DRC Harness
+# autodrc
+
+autodrc is a small desktop chatbot that lets Google Gemini discover and call
+tools on local MCP servers. The UI is built with **PySide6 (Qt 6)** and runs on
+the desktop as a native application — no browser or web frontend.
+
+The agent loop, Gemini adapter, and MCP client live in `app/agent`,
+`app/llm`, and `app/mcp_client`. The GUI only talks to the agent through a small
+protocol and never imports Gemini or the MCP SDK directly.
+
+---
 
 ## Installation
 
-Requirements: Python 3.12+, Tkinter, and access to the Gemini API.
+Requirements: Python 3.12+, PySide6, and access to the Gemini API.
 
 ### Clone the repo
+
 ```sh
-git clone <repo-url>
-cd drc-harness
+git clone <repo-url> autodrc
+cd autodrc
 ```
 
 ### With `uv` (recommended)
@@ -24,11 +35,13 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Tkinter is part of the standard library but is sometimes packaged separately
-on Linux:
+PySide6 ships prebuilt Qt wheels for Linux, macOS, and Windows. On minimal Linux
+images you may need the usual X11/Wayland client libraries. In particular, Qt
+6.5+ requires `libxcb-cursor0` for the X11 (`xcb`) platform plugin:
 
 ```bash
-sudo apt install python3-tk
+sudo apt update
+sudo apt install libxcb-cursor0
 ```
 
 ### Configure Gemini
@@ -41,7 +54,7 @@ Edit `.env`:
 
 ```env
 GEMINI_API_KEY=your_real_key
-GEMINI_MODEL=gemini-3.5-flash-lite
+GEMINI_MODEL=gemini-2.5-flash
 ```
 
 #### Configuration reference
@@ -58,12 +71,14 @@ GEMINI_MODEL=gemini-3.5-flash-lite
 | `MCP_CONFIG_PATH` | no | `mcp_servers.json` | Server configuration file |
 | `LOG_LEVEL` | no | `INFO` | Python logging level |
 
-
+The model can also be changed for the current session from
+**Settings → Model** in the app. The environment file remains the source of
+truth on the next launch.
 
 ### Configure the MCP server
 
-
-`MCPClient` already accepts a list of servers. Add another entry:
+`mcp_servers.example.json` is the committed template; copy it to
+`mcp_servers.json` and adjust the command. `MCPClient` accepts multiple servers:
 
 ```json
 {
@@ -93,35 +108,290 @@ MCP server entries support:
 | `cwd` | no | Working directory for the server process |
 | `connect_timeout` | no | Seconds to wait for initialization |
 
-
-
-
 ---
 
 ## Run
 
-- with uv 
-```bash
-uv run agentic-chatbot
+- with `uv`:
+
+  ```bash
+  uv run autodrc
+  ```
+
+- with `pip` / an activated virtualenv:
+
+  ```sh
+  python -m app.main
+  # or
+  python app/main.py
+  ```
+
+Start KLayout with the klink plugin before asking questions that need live
+layout tools. The app still starts and lists tools without it; KLayout-dependent
+calls return a server-side connection error, which is shown in the transcript
+and passed back to Gemini.
+
+### GUI overview
+
+- **Sidebar** — conversation history, sorted newest first. Create, select,
+  rename, and delete conversations from the list or its context menu. The
+  sidebar can be collapsed with `Ctrl+B` and resized with the splitter.
+- **Chat area** — distinct user bubbles, assistant Markdown (headings, lists,
+  tables, links, blockquotes, inline code, fenced code with syntax
+  highlighting), system notices, and inline error cards.
+- **Composer** — multiline, auto-growing input. **Enter** sends;
+  **Shift+Enter** inserts a newline. Send is disabled while a turn is running.
+- **Tool activity** — every MCP call appears as a collapsible card showing the
+  server, tool, arguments, status (pending/running/completed/failed), and the
+  result. Cards can auto-expand from Settings.
+- **Status** — the header pill shows Connecting, Ready, Thinking, Running a
+  tool, Error, or Offline. MCP connection failures surface as a banner with a
+  retry action.
+- **Settings** (`Ctrl+,`) — current model, API-key status (never the key
+  itself), MCP server list and connection state, tool count, confirmation
+  behavior, auto-expand, and the log-file path.
+- **Tool confirmation** — enabled by default. A dialog shows the exact tool name
+  and arguments before execution; denying the call returns an error response to
+  Gemini instead of executing it.
+
+Conversations are kept in memory for the lifetime of the process. Switching
+conversations restores both the GUI transcript and the agent's Gemini history
+snapshot.
+
+### Keyboard shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `Enter` | Send the message |
+| `Shift+Enter` | Insert a newline |
+| `Ctrl+N` | New conversation |
+| `Ctrl+B` | Show/hide the sidebar |
+| `Ctrl+L` | Focus the composer |
+| `Ctrl+,` | Open Settings |
+
+### Logging
+
+Technical details are written to a rotating log file:
+
+```text
+${XDG_STATE_HOME:-~/.local/state}/autodrc/app.log
 ```
-- with pip 
-```sh
-python app/main.py 
-```
 
-Start KLayout with the klink plugin before asking questions that need layout
-tools. The chatbot will show the MCP error if it is unavailable.
-
-### Using the window
-
-- **Enter** sends; **Shift+Enter** inserts a newline.
-- The status area and spinner show connection/thinking activity.
-- Tool calls appear in grey monospace blocks; failures appear in red.
-- **Confirm tool calls** is checked by default. Each call shows the exact tool
-  name and arguments before execution.
-- **Clear** forgets the conversation and resets the chat display.
-- If startup connection fails, fix the server and press **Send**: the agent
-  retries the connection before the next turn.
+User-facing errors are intentionally friendly; the log contains the full
+exception and traceback.
 
 ---
 
+## Project structure
+
+```text
+.
+├── app/
+│   ├── main.py                 # Qt entry point, logging, startup validation
+│   ├── config.py               # environment settings
+│   ├── agent/
+│   │   ├── controller.py       # manual agentic loop
+│   │   └── events.py           # GUI-facing event dataclasses
+│   ├── llm/
+│   │   ├── gemini.py           # Gemini adapter
+│   │   └── schema.py           # MCP JSON Schema -> Gemini Schema
+│   ├── mcp_client/
+│   │   └── client.py           # STDIO connection, discovery, tool calls
+│   └── gui/
+│       ├── window.py           # main window and application state
+│       ├── sidebar.py          # conversation list and status footer
+│       ├── chat_view.py        # message widgets, Markdown view, tool cards
+│       ├── markdown.py         # safe Markdown renderer and highlighting
+│       ├── composer.py         # auto-growing input
+│       ├── dialogs.py          # settings, confirmation, startup errors
+│       ├── bridge.py           # Qt signals over the asyncio worker thread
+│       ├── worker.py           # background asyncio event-loop thread
+│       ├── theme.py            # dark palette, fonts, stylesheet
+│       ├── icons.py            # painted icons and app logo
+│       ├── models.py           # transcript models and AppInfo
+│       └── protocol.py         # ChatAgent protocol
+├── tests/
+├── .env.example
+├── mcp_servers.example.json
+├── mcp_servers.json            # local config, gitignored
+├── requirements.txt
+└── pyproject.toml
+```
+
+---
+
+## How it works
+
+### Architecture
+
+```mermaid
+flowchart LR
+    subgraph GUI["Main thread — Qt / PySide6"]
+        Window["ChatWindow"]
+        Sidebar["Sidebar"]
+        Chat["Chat view + tool cards"]
+        Composer["Composer"]
+        Settings["Settings / confirmation dialogs"]
+    end
+
+    subgraph Worker["Background thread — asyncio event loop"]
+        Bridge["AgentBridge<br/>Qt signals"]
+        Agent["AgentController<br/>manual agentic loop"]
+        LLM["GeminiClient<br/>google-genai"]
+        MCP["MCPClient<br/>tool registry"]
+        Conn["_ServerConnection<br/>owner task"]
+    end
+
+    subgraph External["Outside the app"]
+        Gemini["Google Gemini API"]
+        Server["klink.mcp<br/>STDIO subprocess"]
+        KLayout["KLayout / klink<br/>127.0.0.1:8765"]
+    end
+
+    Composer -->|send_message| Bridge
+    Bridge -->|submit coroutine| Agent
+    Agent -->|history + declarations| LLM
+    LLM -->|HTTPS| Gemini
+    Gemini -->|text / function_call| LLM
+    Agent -->|call discovered tool| MCP
+    MCP --> Conn
+    Conn -->|JSON-RPC over stdin/stdout| Server
+    Server -.->|optional connection| KLayout
+    Agent -->|AgentEvent| Bridge
+    Bridge -->|Qt signals| Chat
+```
+
+The GUI never calls Gemini or MCP directly. It only talks to the agent through
+`start()`, `send_message()`, `clear()`, `shutdown()`, and the small snapshot/model
+helpers. Tool activity arrives as `AgentEvent` objects, which
+`AgentBridge` forwards to the Qt main thread as signals. The worker thread owns
+the asyncio loop; no blocking call runs on the GUI thread.
+
+The MCP layer has **no Gemini imports**. The Gemini layer has **no MCP SDK
+imports**. The agent is the only place that understands both sides.
+
+### The agentic loop
+
+`AgentController.send_message()` appends the user message, discovers tools, then
+repeats up to `MAX_TOOL_ITERATIONS` times:
+
+1. Ask Gemini with the full history and tool declarations.
+2. Append the model turn to history unchanged.
+3. If there are no function calls, return the final text.
+4. Otherwise validate and execute each call in order, emitting status and tool
+   events.
+5. Append one user-role turn containing all function responses.
+6. Continue until Gemini answers or the iteration limit is reached.
+
+Multiple calls in one Gemini response run sequentially because tools may have
+side effects or depend on each other. Unknown tools, invalid arguments, denied
+confirmations, and execution failures all become `{"error": ...}` function
+responses, so Gemini can correct itself or explain the failure.
+
+### Streaming
+
+The Gemini adapter currently uses non-streaming requests. The GUI therefore does
+not fake token-by-token output: it shows an animated status pill, live tool
+cards, and a disabled composer while a turn is in progress. If streaming is
+added to the backend later, the event/bridge layer can forward chunks without
+changing the agent or GUI structure.
+
+---
+
+## Tests
+
+```bash
+uv run pytest -q
+```
+
+The suite covers the agent loop, Gemini/MCP mocking, schema conversion, GUI
+flows (offscreen Qt), Markdown rendering and escaping, history snapshots, and
+model changes. Run it with no display available; Qt uses
+`QT_QPA_PLATFORM=offscreen`.
+
+Useful checks:
+
+```bash
+uvx ruff check app tests
+QT_QPA_PLATFORM=offscreen uv run pytest -q
+```
+
+An optional live MCP check against the real `klink.mcp` server:
+
+```bash
+uv run python - <<'PY'
+import asyncio
+from app.mcp_client.client import MCPClient, load_server_configs
+
+async def main():
+    client = MCPClient(load_server_configs("mcp_servers.json"))
+    await client.connect()
+    try:
+        tools = await client.list_tools()
+        print(f"{len(tools)} tools discovered")
+        for tool in tools[:10]:
+            print("-", tool.name)
+    finally:
+        await client.close()
+
+asyncio.run(main())
+PY
+```
+
+---
+
+## Troubleshooting
+
+**`GEMINI_API_KEY is not set`**
+Copy `.env.example` to `.env` and fill in the key. Environment variables set in
+the shell take precedence over `.env`.
+
+**Gemini returns 400/401/403**
+Check the key and the model name. The model must support function calling. Error
+text is redacted, but Google's message is preserved.
+
+**`Could not start the Qt GUI: no display was detected`**
+Run the app in a desktop session, or set `QT_QPA_PLATFORM` (for example
+`offscreen` for tests). Check that `DISPLAY` or `WAYLAND_DISPLAY` is set.
+
+**Qt fails to load the platform plugin (`xcb`)**
+Install the missing X11 client libraries (commonly `libxcb-cursor0`) or run under
+Wayland with `QT_QPA_PLATFORM=wayland`.
+
+**`MCP configuration file not found`**
+Set `MCP_CONFIG_PATH` to the correct file, or run from the project directory so
+the default `mcp_servers.json` is found.
+
+**`Could not connect to MCP server 'klink'`**
+Run the command from `mcp_servers.json` manually in a terminal to see its
+startup error. Check that the configured Python exists and that `klink.mcp` is
+installed in that environment. Use the banner's retry action after fixing it.
+
+**KLayout connection refused on `127.0.0.1:8765`**
+The MCP server is running but KLayout/klink is not. Start KLayout with the klink
+plugin. Until then, only tools that do not require the live session will work.
+
+**A tool keeps being called until the iteration limit**
+Inspect the tool card in the transcript. Gemini may be retrying because the
+server returned an error. Increase `MAX_TOOL_ITERATIONS` only after
+understanding the loop; the limit is a safety net.
+
+**The tool result is cut off**
+`MAX_TOOL_RESULT_CHARS` controls what is sent to Gemini. Tool cards cap the
+displayed result separately.
+
+**Unexpected error dialog**
+Open the log file from Settings or the path above; the full traceback is there.
+
+---
+
+## Limitations
+
+- STDIO transport only.
+- Non-streaming Gemini responses.
+- In-memory conversations; no persistence across launches.
+- Tools only; MCP prompts/resources are not exposed.
+- The JSON Schema converter supports common keywords, not the entire standard.
+- Very large tool sets consume context (the klink server can expose ~196 tools).
+- KLayout-dependent tools require a running KLayout/klink session.
+- Tool confirmation pauses the agent until the user answers.

@@ -1,7 +1,7 @@
 """Events emitted by the agent while it works.
 
 The GUI consumes these events to show tool activity. The agent does not import
-Tkinter and does not know how events are displayed.
+Qt and does not know how events are displayed.
 """
 
 from __future__ import annotations

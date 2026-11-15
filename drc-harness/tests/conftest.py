@@ -75,6 +75,10 @@ class ScriptedLLM:
         self.requests: list[list[types.Content]] = []
         self.tool_sets: list[GeminiToolSet] = []
         self.closed = False
+        self.model = "scripted-model"
+
+    def set_model(self, model: str) -> None:
+        self.model = model
 
     def build_tools(self, mcp_tools: Sequence[MCPTool]) -> GeminiToolSet:
         return build_tool_set(mcp_tools)

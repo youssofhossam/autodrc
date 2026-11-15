@@ -53,6 +53,14 @@ class GeminiClient:
     def model(self) -> str:
         return self._model
 
+    def set_model(self, model: str) -> None:
+        """Use another function-calling model for subsequent requests."""
+
+        name = model.strip()
+        if not name:
+            raise GeminiError("GEMINI_MODEL is not set.")
+        self._model = name
+
     def build_tools(self, mcp_tools: Sequence[MCPTool]) -> GeminiToolSet:
         """Convert MCP tools into Gemini function declarations."""
 

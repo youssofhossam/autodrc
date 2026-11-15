@@ -84,12 +84,59 @@ class AgentController:
         self._request_lock = asyncio.Lock()
         self._start_lock = asyncio.Lock()
         self._started = False
+        self._tool_count = 0
 
     @property
     def history(self) -> tuple[types.Content, ...]:
         """Read-only view of the complete conversation, including tool turns."""
 
         return tuple(self._contents)
+
+    @property
+    def tool_count(self) -> int:
+        """Number of tools discovered during the most recent turn."""
+
+        return self._tool_count
+
+    @property
+    def model(self) -> str:
+        return str(getattr(self._llm, "model", "") or "")
+
+    def set_model(self, model: str) -> None:
+        """Change the Gemini model used for subsequent turns."""
+
+        name = model.strip()
+        if not name:
+            raise AgentError("The Gemini model name cannot be empty.")
+        if self._request_lock.locked():
+            raise AgentError("Cannot change the model while a request is running.")
+        setter = getattr(self._llm, "set_model", None)
+        if setter is None:
+            raise AgentError("This Gemini client does not support changing models.")
+        setter(name)
+
+    def snapshot_history(self) -> tuple[types.Content, ...]:
+        """Return a deep copy of the history that can be restored later.
+
+        The GUI keeps one snapshot per conversation. Snapshots are opaque to the
+        GUI; only the agent knows how to restore them.
+        """
+
+        return tuple(content.model_copy(deep=True) for content in self._contents)
+
+    def restore_history(self, contents: Sequence[types.Content] | None) -> None:
+        """Replace the conversation history with a previous snapshot."""
+
+        if self._request_lock.locked():
+            raise AgentError(
+                "Cannot switch conversations while a request is running."
+            )
+        restored: list[types.Content] = []
+        for content in contents or ():
+            if not isinstance(content, types.Content):
+                raise AgentError("The conversation snapshot is invalid.")
+            restored.append(content.model_copy(deep=True))
+        self._contents = restored
 
     async def start(self) -> None:
         """Connect to the MCP servers and keep them alive."""
@@ -170,6 +217,7 @@ class AgentController:
     async def _run_turn(self, emit: Callable[[AgentEvent], None]) -> str:
         emit(StatusEvent("Discovering MCP tools..."))
         mcp_tools = await self._mcp.list_tools()
+        self._tool_count = len(mcp_tools)
         tool_set = self._llm.build_tools(mcp_tools)
 
         for iteration in range(1, self._max_iterations + 1):
