@@ -247,8 +247,8 @@ call or explain the failure. Nothing is silently swallowed.
 
 ## The agentic loop
 
-The loop is in `AgentController.send_message()` and has a hard iteration limit
-(`MAX_TOOL_ITERATIONS`, default 8):
+The loop is in `AgentController.send_message()` and has a soft iteration limit
+(`MAX_TOOL_ITERATIONS`, default 1000):
 
 ```text
 append the user message to history
@@ -272,7 +272,8 @@ repeat up to MAX_TOOL_ITERATIONS times:
     append one user-role turn containing all function responses
 
 if the limit is reached:
-    raise IterationLimitError with a clear message
+    ask the GUI whether to continue (another MAX_TOOL_ITERATIONS steps)
+    if declined, raise IterationLimitError with a clear message
 ```
 
 Multiple calls in one model response are executed sequentially in the order the
@@ -499,8 +500,9 @@ Alternatively, run under Wayland with `QT_QPA_PLATFORM=wayland`.
 
 **A tool keeps being called until the iteration limit**  
 Inspect the tool result in the transcript. Gemini may be retrying because the
-server returned an error. Increase `MAX_TOOL_ITERATIONS` only after
-understanding the loop; the limit is a safety net.
+server returned an error. When the step budget runs out the GUI asks whether to
+continue; stop there instead of raising `MAX_TOOL_ITERATIONS`, because the limit
+is a safety net.
 
 **The tool result is cut off**  
 `MAX_TOOL_RESULT_CHARS` controls what is sent to Gemini. The GUI independently

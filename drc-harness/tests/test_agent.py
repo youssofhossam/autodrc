@@ -209,6 +209,52 @@ async def test_iteration_limit_is_enforced() -> None:
 
 
 @pytest.mark.asyncio
+async def test_continue_callback_extends_the_iteration_budget() -> None:
+    llm = ScriptedLLM(
+        [
+            tool_call_response(function_call("echo", {"text": "1"})),
+            tool_call_response(function_call("echo", {"text": "2"})),
+            tool_call_response(function_call("echo", {"text": "3"})),
+            tool_call_response(function_call("echo", {"text": "4"})),
+        ]
+    )
+    mcp = FakeMCP()
+    agent = AgentController(llm, mcp, max_iterations=2)
+    asked: list[int] = []
+
+    def decide(steps: int) -> bool:
+        asked.append(steps)
+        return len(asked) == 1  # continue once, then stop
+
+    agent.set_continue_callback(decide)
+
+    with pytest.raises(Exception, match="Stopped after 4"):
+        await agent.send_message("Loop forever")
+
+    assert asked == [2, 4]
+    assert len(mcp.calls) == 4
+    assert len(llm.requests) == 4
+
+
+@pytest.mark.asyncio
+async def test_declining_to_continue_stops_the_turn() -> None:
+    llm = ScriptedLLM(
+        [
+            tool_call_response(function_call("echo", {"text": "1"})),
+            tool_call_response(function_call("echo", {"text": "2"})),
+        ]
+    )
+    mcp = FakeMCP()
+    agent = AgentController(llm, mcp, max_iterations=1)
+    agent.set_continue_callback(lambda _steps: False)
+
+    with pytest.raises(Exception, match="Stopped after 1"):
+        await agent.send_message("Loop forever")
+
+    assert len(llm.requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_conversation_context_preserved_across_messages() -> None:
     llm = ScriptedLLM([text_response("First answer."), text_response("Second answer.")])
     mcp = FakeMCP()

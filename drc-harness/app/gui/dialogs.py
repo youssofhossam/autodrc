@@ -217,6 +217,12 @@ class SettingsDialog(QDialog):
         layout.addLayout(
             _value_row("Max tool steps", str(self._info.max_iterations))
         )
+        step_hint = QLabel(
+            "When a turn uses this many steps, the app asks whether to continue."
+        )
+        step_hint.setObjectName("HintLabel")
+        step_hint.setWordWrap(True)
+        layout.addWidget(step_hint)
 
         self._on_provider_changed()
         return card
@@ -499,6 +505,71 @@ class ConfirmToolDialog(QDialog):
     def _allow(self) -> None:
         self.approved = True
         self.disable_confirmation = self.no_more.isChecked()
+        self.accept()
+
+
+class ContinueDialog(QDialog):
+    """Ask whether to keep working after the step budget runs out."""
+
+    def __init__(self, steps: int, *, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.approved = False
+        self.setWindowTitle("Continue working?")
+        self.setModal(True)
+        self.resize(500, 230)
+        self.setMinimumSize(420, 210)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(12)
+
+        header = QHBoxLayout()
+        header.setSpacing(12)
+        icon_label = QLabel()
+        icon_label.setPixmap(icon("alert", COLORS["warning"], 24).pixmap(24, 24))
+        icon_label.setFixedSize(24, 24)
+        header.addWidget(icon_label, 0, Qt.AlignmentFlag.AlignTop)
+        heading = QVBoxLayout()
+        heading.setSpacing(2)
+        title = QLabel("Continue working?")
+        title.setObjectName("DialogTitle")
+        heading.addWidget(title)
+        subtitle = QLabel(
+            f"The assistant has used its {steps:,}-step budget for this turn "
+            "and is still calling tools."
+        )
+        subtitle.setObjectName("DialogSubtitle")
+        subtitle.setWordWrap(True)
+        heading.addWidget(subtitle)
+        header.addLayout(heading, 1)
+        layout.addLayout(header)
+
+        hint = QLabel(
+            f"Continuing grants another {steps:,} steps. Long tool loops can "
+            "take a while and use more API tokens, so stop if the model looks "
+            "stuck repeating itself."
+        )
+        hint.setObjectName("HintLabel")
+        hint.setWordWrap(True)
+        layout.addWidget(hint, 1)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        buttons.addStretch(1)
+        stop = QPushButton("Stop")
+        stop.setObjectName("SecondaryButton")
+        stop.setDefault(True)
+        stop.clicked.connect(self.reject)
+        buttons.addWidget(stop)
+        keep_going = QPushButton("Continue")
+        keep_going.setObjectName("PrimaryButton")
+        keep_going.setAutoDefault(False)
+        keep_going.clicked.connect(self._continue)
+        buttons.addWidget(keep_going)
+        layout.addLayout(buttons)
+
+    def _continue(self) -> None:
+        self.approved = True
         self.accept()
 
 

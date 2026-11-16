@@ -20,7 +20,7 @@ def test_defaults() -> None:
 
     assert settings.gemini_api_key == "test-key"
     assert settings.gemini_model == "gemini-test"
-    assert settings.max_tool_iterations == 8
+    assert settings.max_tool_iterations == 1000
     assert settings.max_tool_result_chars == 20_000
     assert settings.confirm_tool_calls is True
     assert settings.temperature is None

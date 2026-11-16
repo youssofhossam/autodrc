@@ -21,6 +21,7 @@ from app.agent.events import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from app.gui.bridge import AgentBridge, ContinueRequest
 from app.gui.dialogs import SettingsDialog
 from app.gui.models import AppInfo, ProviderInfo, SettingsResult
 from app.gui.theme import apply_theme
@@ -39,6 +40,7 @@ class FakeAgent:
         self.started = 0
         self.shutdowns = 0
         self.confirmation_callback: Callable[[str, dict[str, Any]], bool] | None = None
+        self.continue_callback: Callable[[int], bool] | None = None
 
     async def start(self) -> None:
         await asyncio.sleep(0.01)
@@ -87,6 +89,11 @@ class FakeAgent:
     ) -> None:
         self.confirmation_callback = callback
 
+    def set_continue_callback(
+        self, callback: Callable[[int], bool] | None
+    ) -> None:
+        self.continue_callback = callback
+
     def snapshot_history(self) -> tuple[str, ...]:
         return tuple(self.history)
 
@@ -108,7 +115,7 @@ def _info() -> AppInfo:
         api_key_configured=True,
         mcp_servers=("filesystem",),
         mcp_config_path="/tmp/servers.json",
-        max_iterations=8,
+        max_iterations=1000,
         max_result_chars=20_000,
         temperature=None,
         log_file="/tmp/autodrc-test/app.log",
@@ -242,6 +249,52 @@ def test_confirmation_is_auto_approved_when_disabled(window) -> None:
     assert agent.confirmation_callback is not None
     assert win._confirm_enabled is False
     assert agent.confirmation_callback("some_tool", {"x": 1}) is True
+
+
+def test_continue_prompt_is_shown_and_resolved(qapp: QApplication, window, monkeypatch) -> None:
+    win, _agent = window
+
+    class AcceptingDialog:
+        approved = True
+
+        def __init__(self, steps: int, *, parent=None) -> None:
+            self.steps = steps
+
+        def exec(self) -> int:
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr("app.gui.window.ContinueDialog", AcceptingDialog)
+    request = ContinueRequest(1000)
+
+    win._on_continue_requested(request)
+
+    assert request.approved is True
+    assert win._status_pill.text.toolTip() == "Continuing…"
+
+
+def test_continue_request_is_declined_while_closing(window) -> None:
+    win, _agent = window
+    win._closing = True
+    request = ContinueRequest(1000)
+
+    win._on_continue_requested(request)
+
+    assert request.approved is False
+
+
+def test_bridge_routes_continue_requests_to_the_gui(qapp: QApplication) -> None:
+    agent = FakeAgent()
+    bridge = AgentBridge(agent)
+    try:
+        assert agent.continue_callback is not None
+        bridge.continue_requested.connect(lambda request: request.resolve(True))
+        assert agent.continue_callback(1000) is True
+
+        bridge.continue_requested.disconnect()
+        bridge.continue_requested.connect(lambda request: request.resolve(False))
+        assert agent.continue_callback(1000) is False
+    finally:
+        bridge.shutdown()
 
 
 def test_header_and_tool_summary_are_useful(qapp: QApplication, window) -> None:

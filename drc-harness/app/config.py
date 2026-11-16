@@ -101,7 +101,7 @@ class Settings:
             raise ConfigError("LLM_TEMPERATURE must be between 0.0 and 2.0.")
 
         max_iterations = _positive_int(
-            source.get("MAX_TOOL_ITERATIONS", "8"), "MAX_TOOL_ITERATIONS"
+            source.get("MAX_TOOL_ITERATIONS", "1000"), "MAX_TOOL_ITERATIONS"
         )
         max_result_chars = _positive_int(
             source.get("MAX_TOOL_RESULT_CHARS", "20000"), "MAX_TOOL_RESULT_CHARS"

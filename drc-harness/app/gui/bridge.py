@@ -19,19 +19,17 @@ from app.gui.worker import AsyncWorker
 
 logger = logging.getLogger(__name__)
 
-_CONFIRM_TIMEOUT_SECONDS = 300
+_PROMPT_TIMEOUT_SECONDS = 300
 
 
-class ConfirmationRequest:
-    """A tool-confirmation request that blocks the agent thread until answered.
+class _BlockingRequest:
+    """A question for the GUI that blocks the agent thread until answered.
 
     Resolution happens on the GUI thread; the waiting agent thread only uses a
     plain ``threading.Event``, never a widget.
     """
 
-    def __init__(self, name: str, arguments: dict[str, Any]) -> None:
-        self.name = name
-        self.arguments = dict(arguments)
+    def __init__(self) -> None:
         self._event = threading.Event()
         self._approved = False
 
@@ -47,6 +45,23 @@ class ConfirmationRequest:
         self._event.set()
 
 
+class ConfirmationRequest(_BlockingRequest):
+    """A tool call that needs the user's approval."""
+
+    def __init__(self, name: str, arguments: dict[str, Any]) -> None:
+        super().__init__()
+        self.name = name
+        self.arguments = dict(arguments)
+
+
+class ContinueRequest(_BlockingRequest):
+    """Ask whether to grant another block of agent steps."""
+
+    def __init__(self, steps: int) -> None:
+        super().__init__()
+        self.steps = int(steps)
+
+
 class AgentBridge(QObject):
     event = Signal(object)
     turn_finished = Signal(str)
@@ -54,18 +69,20 @@ class AgentBridge(QObject):
     connection_ready = Signal()
     connection_failed = Signal(str)
     confirmation_requested = Signal(object)
+    continue_requested = Signal(object)
 
     def __init__(self, agent: ChatAgent, *, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._agent = agent
         self._worker = AsyncWorker()
-        self._pending: set[ConfirmationRequest] = set()
+        self._pending: set[_BlockingRequest] = set()
         self._pending_lock = threading.Lock()
         self._confirm_enabled = True
         self._closing = False
         self._connected = False
 
         self._agent.set_confirmation_callback(self._confirm)
+        self._agent.set_continue_callback(self._ask_continue)
 
     @property
     def connected(self) -> bool:
@@ -138,8 +155,35 @@ class AgentBridge(QObject):
             self._pending.add(request)
         self.confirmation_requested.emit(request)
 
-        if not request.wait(_CONFIRM_TIMEOUT_SECONDS):
+        if not request.wait(_PROMPT_TIMEOUT_SECONDS):
             logger.warning("Timed out waiting for tool confirmation: %s", name)
+            approved = False
+        else:
+            approved = request.approved
+
+        with self._pending_lock:
+            self._pending.discard(request)
+        return approved
+
+    # ------------------------------------------------------------ continue
+
+    def _ask_continue(self, steps: int) -> bool:
+        """Runs on the worker thread and blocks until the GUI answers."""
+
+        if self._closing:
+            return False
+
+        request = ContinueRequest(steps)
+        with self._pending_lock:
+            if self._closing:
+                return False
+            self._pending.add(request)
+        self.continue_requested.emit(request)
+
+        if not request.wait(_PROMPT_TIMEOUT_SECONDS):
+            logger.warning(
+                "Timed out waiting to continue after %s steps.", steps
+            )
             approved = False
         else:
             approved = request.approved

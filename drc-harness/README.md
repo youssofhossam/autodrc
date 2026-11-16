@@ -88,7 +88,7 @@ the transcript and log.
 | `OPENROUTER_APP_NAME` | no | `autodrc` | Sent as the `X-Title` attribution header |
 | `LLM_SYSTEM_INSTRUCTION` | no | built-in | Override the system instruction (falls back to `GEMINI_SYSTEM_INSTRUCTION`) |
 | `LLM_TEMPERATURE` | no | SDK default | 0.0–2.0; falls back to `GEMINI_TEMPERATURE` / `OPENROUTER_TEMPERATURE` |
-| `MAX_TOOL_ITERATIONS` | no | `8` | Maximum model requests per user turn |
+| `MAX_TOOL_ITERATIONS` | no | `1000` | Model requests per turn before the GUI asks to continue |
 | `MAX_TOOL_RESULT_CHARS` | no | `20000` | Truncate huge MCP results sent to the model |
 | `MCP_CONFIRM_TOOL_CALLS` | no | `true` | Initial state of the confirmation checkbox |
 | `MCP_CONFIG_PATH` | no | `mcp_servers.json` | Server configuration file |
@@ -310,6 +310,12 @@ repeats up to `MAX_TOOL_ITERATIONS` times:
 5. Append one user-role turn containing all function responses.
 6. Continue until the model answers or the iteration limit is reached.
 
+The limit is a soft budget. When a turn uses up `MAX_TOOL_ITERATIONS` steps
+without an answer, the GUI asks **Continue working?** and shows how many steps
+were used. Continuing grants another block of the same size (another
+`MAX_TOOL_ITERATIONS` requests); stopping ends the turn with an error. The
+prompt defaults to **Stop**, so an unattended loop cannot run forever.
+
 Multiple calls in one response run sequentially because tools may have side
 effects or depend on each other. Unknown tools, invalid arguments, denied
 confirmations, and execution failures all become `{"error": ...}` function
@@ -415,8 +421,9 @@ plugin. Until then, only tools that do not require the live session will work.
 
 **A tool keeps being called until the iteration limit**
 Inspect the tool card in the transcript. The model may be retrying because the
-server returned an error. Increase `MAX_TOOL_ITERATIONS` only after
-understanding the loop; the limit is a safety net.
+server returned an error. The GUI asks whether to continue when the step budget
+runs out; stop there instead of raising `MAX_TOOL_ITERATIONS`, because the limit
+is a safety net.
 
 **The tool result is cut off**
 `MAX_TOOL_RESULT_CHARS` controls what is sent to the model. Tool cards cap the

@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 EventSink = Callable[[AgentEvent], None]
 ConfirmationCallback = Callable[[str, dict[str, Any]], bool]
+ContinueCallback = Callable[[int], bool]
 
 
 class AgentError(RuntimeError):
@@ -70,7 +71,7 @@ class AgentController:
         llm: LLMClient,
         mcp: ToolProvider,
         *,
-        max_iterations: int = 8,
+        max_iterations: int = 1000,
         max_tool_result_chars: int = 20_000,
         confirm_tool: ConfirmationCallback | None = None,
         llm_factory: LLMFactory | None = None,
@@ -86,6 +87,7 @@ class AgentController:
         self._max_iterations = max_iterations
         self._max_tool_result_chars = max_tool_result_chars
         self._confirm_tool = confirm_tool
+        self._continue_turn: ContinueCallback | None = None
         self._contents: list[types.Content] = []
         self._request_lock = asyncio.Lock()
         self._start_lock = asyncio.Lock()
@@ -148,7 +150,7 @@ class AgentController:
             client = self._retired_llms.pop()
             try:
                 await client.aclose()
-            except Exception:  # noqa: BLE001 - cleanup must not fail a turn
+            except Exception:  # cleanup must not fail a turn
                 logger.warning("Could not close a retired LLM client.", exc_info=True)
 
     def snapshot_history(self) -> tuple[types.Content, ...]:
@@ -197,6 +199,16 @@ class AgentController:
         """Install the GUI's confirmation dialog (or None to disable it)."""
 
         self._confirm_tool = callback
+
+    def set_continue_callback(self, callback: ContinueCallback | None) -> None:
+        """Install the callback asked before extending the step budget.
+
+        The callback receives the number of model requests already made in the
+        turn and returns True to grant another ``max_iterations`` steps.
+        Without a callback the limit stays hard.
+        """
+
+        self._continue_turn = callback
 
     async def shutdown(self) -> None:
         """Wait for an in-flight turn, then close MCP and the LLM client."""
@@ -258,41 +270,48 @@ class AgentController:
         self._tool_count = len(mcp_tools)
         tool_set = self._llm.build_tools(mcp_tools)
 
-        for iteration in range(1, self._max_iterations + 1):
-            emit(StatusEvent(f"Thinking (step {iteration}/{self._max_iterations})..."))
-            response = await self._llm.generate(self._contents, tool_set)
-            content = self._extract_content(response)
-            self._contents.append(content)
+        steps = 0
+        budget = self._max_iterations
+        while True:
+            while steps < budget:
+                steps += 1
+                emit(StatusEvent(f"Thinking (step {steps}/{budget})..."))
+                response = await self._llm.generate(self._contents, tool_set)
+                content = self._extract_content(response)
+                self._contents.append(content)
 
-            calls, text_parts = _parts_from_content(content)
-            if text_parts:
-                emit(AssistantEvent("\n".join(text_parts)))
+                calls, text_parts = _parts_from_content(content)
+                if text_parts:
+                    emit(AssistantEvent("\n".join(text_parts)))
 
-            if not calls:
-                final_text = "\n".join(text_parts).strip()
-                if not final_text:
-                    raise AgentError(
-                        "The model returned neither text nor a function call."
+                if not calls:
+                    final_text = "\n".join(text_parts).strip()
+                    if not final_text:
+                        raise AgentError(
+                            "The model returned neither text nor a function call."
+                        )
+                    return final_text
+
+                function_responses: list[types.Part] = []
+                for call in calls:
+                    function_responses.append(
+                        await self._handle_function_call(call, tool_set, emit)
                     )
-                return final_text
 
-            function_responses: list[types.Part] = []
-            for call in calls:
-                function_responses.append(
-                    await self._handle_function_call(call, tool_set, emit)
+                # Function responses go back as a user-role turn, matching
+                # Gemini's expected conversation format. The model turn above
+                # was appended verbatim, preserving function calls and thought
+                # signatures.
+                self._contents.append(
+                    types.Content(role="user", parts=function_responses)
                 )
 
-            # Function responses go back as a user-role turn, matching
-            # Gemini's expected conversation format. The model turn above
-            # was appended verbatim, preserving function calls and thought
-            # signatures.
-            self._contents.append(types.Content(role="user", parts=function_responses))
-
-        raise IterationLimitError(
-            f"Stopped after {self._max_iterations} model requests because "
-            "the model kept requesting tools. Increase MAX_TOOL_ITERATIONS "
-            "or rephrase the request."
-        )
+            if not await self._ask_continue(steps):
+                raise IterationLimitError(
+                    f"Stopped after {steps} model requests because the model "
+                    "kept requesting tools."
+                )
+            budget += self._max_iterations
 
     async def _handle_function_call(
         self,
@@ -348,6 +367,18 @@ class AgentController:
         if result.is_error:
             return _function_response(requested_name, call.id, error=text)
         return _function_response(requested_name, call.id, result=text)
+
+    async def _ask_continue(self, steps: int) -> bool:
+        callback = self._continue_turn
+        if callback is None:
+            return False
+
+        loop = asyncio.get_running_loop()
+        try:
+            return bool(await loop.run_in_executor(None, callback, steps))
+        except Exception:
+            logger.exception("Continue callback failed.")
+            return False
 
     async def _ask_confirmation(
         self, tool_name: str, arguments: dict[str, Any]

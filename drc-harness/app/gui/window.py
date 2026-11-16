@@ -30,10 +30,14 @@ from app.agent.events import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from app.gui.bridge import AgentBridge, ConfirmationRequest
+from app.gui.bridge import AgentBridge, ConfirmationRequest, ContinueRequest
 from app.gui.chat_view import ChatView, ElidedLabel
 from app.gui.composer import Composer
-from app.gui.dialogs import ConfirmToolDialog, SettingsDialog
+from app.gui.dialogs import (
+    ConfirmToolDialog,
+    ContinueDialog,
+    SettingsDialog,
+)
 from app.gui.icons import app_icon, icon
 from app.gui.models import (
     AppInfo,
@@ -174,6 +178,7 @@ class ChatWindow(QMainWindow):
         self._bridge.connection_ready.connect(self._on_connection_ready)
         self._bridge.connection_failed.connect(self._on_connection_failed)
         self._bridge.confirmation_requested.connect(self._on_confirmation_requested)
+        self._bridge.continue_requested.connect(self._on_continue_requested)
 
         self._build_ui()
         self._chat.set_auto_expand(self._auto_expand)
@@ -657,6 +662,26 @@ class ChatWindow(QMainWindow):
             request.resolve(False)
         finally:
             self._chat.mark_tool_running(request.name)
+
+    # ------------------------------------------------------------ continue
+
+    def _on_continue_requested(self, request: ContinueRequest) -> None:
+        if self._closing:
+            request.resolve(False)
+            return
+        try:
+            QApplication.alert(self)
+            self.raise_()
+            self.activateWindow()
+            self._set_status("Step budget reached", "warning")
+            dialog = ContinueDialog(request.steps, parent=self)
+            dialog.exec()
+            request.resolve(dialog.approved)
+            if dialog.approved:
+                self._set_status("Continuing…", "busy")
+        except Exception:
+            logger.exception("Continue dialog failed.")
+            request.resolve(False)
 
     # ------------------------------------------------------------ settings
 
