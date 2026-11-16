@@ -4,6 +4,7 @@ import asyncio
 import os
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -11,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtCore import QSettings
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
 from app.agent.events import (
     AgentEvent,
@@ -20,7 +21,8 @@ from app.agent.events import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from app.gui.models import AppInfo
+from app.gui.dialogs import SettingsDialog
+from app.gui.models import AppInfo, ProviderInfo, SettingsResult
 from app.gui.theme import apply_theme
 from app.gui.window import ChatWindow
 
@@ -31,6 +33,7 @@ class FakeAgent:
 
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
+        self.provider = "gemini"
         self.history: list[str] = []
         self.calls: list[str] = []
         self.started = 0
@@ -93,9 +96,14 @@ class FakeAgent:
     def set_model(self, model: str) -> None:
         self.model = model
 
+    def set_provider(self, provider: str, model: str) -> None:
+        self.provider = provider
+        self.model = model
+
 
 def _info() -> AppInfo:
     return AppInfo(
+        provider="gemini",
         model="gemini-test",
         api_key_configured=True,
         mcp_servers=("filesystem",),
@@ -246,3 +254,108 @@ def test_header_and_tool_summary_are_useful(qapp: QApplication, window) -> None:
     assert conversation is not None
     assert conversation.title == "Check the directory"
     assert "gemini-test" in win._subtitle_label.text()
+
+
+def test_settings_dialog_uses_provider_model_choices(qapp: QApplication) -> None:
+    info = replace(
+        _info(),
+        provider="openrouter",
+        model="google/gemini-2.5-flash",
+    )
+    dialog = SettingsDialog(
+        info,
+        model=info.model,
+        mcp_connected=True,
+        mcp_error="",
+        tool_count=0,
+        confirm_tool_calls=True,
+        auto_expand_tools=False,
+        busy=False,
+    )
+    items = [
+        dialog.model_combo.itemText(index)
+        for index in range(dialog.model_combo.count())
+    ]
+
+    assert info.provider_name == "OpenRouter"
+    assert items[0] == "google/gemini-2.5-flash"
+    assert "anthropic/claude-sonnet-4" in items
+    assert "gemini-2.5-pro" not in items
+    assert dialog.provider_combo.currentData() == "openrouter"
+    dialog.deleteLater()
+
+
+def test_settings_provider_selector_switches_the_model_choices(
+    qapp: QApplication,
+) -> None:
+    info = replace(
+        _info(),
+        providers=(
+            ProviderInfo("gemini", "gemini-test", True),
+            ProviderInfo("openrouter", "openrouter-test", True),
+            ProviderInfo("other", "other-model", False),
+        ),
+    )
+    dialog = SettingsDialog(
+        info,
+        model=info.model,
+        mcp_connected=True,
+        mcp_error="",
+        tool_count=0,
+        confirm_tool_calls=True,
+        auto_expand_tools=False,
+        busy=False,
+    )
+
+    # Providers without an API key are not selectable.
+    assert dialog.provider_combo.findData("other") == -1
+    assert dialog.model_combo.currentText() == "gemini-test"
+
+    dialog.provider_combo.setCurrentIndex(
+        dialog.provider_combo.findData("openrouter")
+    )
+    assert dialog.model_combo.currentText() == "openrouter-test"
+    assert "anthropic/claude-sonnet-4" in [
+        dialog.model_combo.itemText(index)
+        for index in range(dialog.model_combo.count())
+    ]
+
+    dialog._accept()
+    assert dialog.result_settings.provider == "openrouter"
+    assert dialog.result_settings.model == "openrouter-test"
+    dialog.deleteLater()
+
+
+def test_switching_provider_updates_the_agent_and_header(
+    qapp: QApplication, window, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    win, agent = window
+    assert _wait_for(qapp, lambda: agent.started >= 1)
+    win._info = replace(
+        win._info,
+        providers=(
+            ProviderInfo("gemini", "gemini-test", True),
+            ProviderInfo("openrouter", "openrouter-test", True),
+        ),
+    )
+
+    class AcceptingDialog:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.result_settings = SettingsResult(
+                model="openrouter-test",
+                confirm_tool_calls=win._confirm_enabled,
+                auto_expand_tools=win._auto_expand,
+                provider="openrouter",
+            )
+
+        def exec(self) -> QDialog.DialogCode:
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr("app.gui.window.SettingsDialog", AcceptingDialog)
+    win._open_settings()
+
+    assert agent.provider == "openrouter"
+    assert agent.model == "openrouter-test"
+    assert win._provider == "openrouter"
+    assert win._model == "openrouter-test"
+    assert "OpenRouter" in win._subtitle_label.text()

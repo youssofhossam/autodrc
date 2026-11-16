@@ -56,7 +56,7 @@ class Composer(QWidget):
 
         self.input = ComposerInput()
         self.input.setObjectName("ComposerInput")
-        self.input.setPlaceholderText("Message Gemini…")
+        self.input.setPlaceholderText("Message the assistant…")
         self.input.setFrameShape(QFrame.Shape.NoFrame)
         self.input.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
@@ -115,7 +115,7 @@ class Composer(QWidget):
     def set_busy(self, busy: bool) -> None:
         self._busy = bool(busy)
         self.input.setPlaceholderText(
-            "Gemini is working…" if busy else "Message Gemini…"
+            "The assistant is working…" if busy else "Message the assistant…"
         )
         self._update_send_enabled()
         if not busy:

@@ -382,6 +382,50 @@ def test_model_can_be_changed_between_requests() -> None:
         agent.set_model("  ")
 
 
+def test_provider_can_be_changed_between_requests() -> None:
+    first = ScriptedLLM([text_response("ok")])
+    second = ScriptedLLM([text_response("ok")])
+    created: list[tuple[str, str]] = []
+
+    def factory(provider: str, model: str):
+        created.append((provider, model))
+        second.model = model
+        return second
+
+    agent = AgentController(first, FakeMCP(), llm_factory=factory)
+
+    agent.set_provider("openrouter", "openrouter-model")
+
+    assert created == [("openrouter", "openrouter-model")]
+    assert agent.model == "openrouter-model"
+
+    with pytest.raises(AgentError, match="cannot be empty"):
+        agent.set_provider("openrouter", "  ")
+
+
+def test_provider_cannot_be_changed_without_a_factory() -> None:
+    agent = AgentController(ScriptedLLM([text_response("ok")]), FakeMCP())
+
+    with pytest.raises(AgentError, match="does not support"):
+        agent.set_provider("openrouter", "some-model")
+
+
+@pytest.mark.asyncio
+async def test_switching_provider_closes_the_retired_client() -> None:
+    first = ScriptedLLM([text_response("ok")])
+    second = ScriptedLLM([text_response("ok")])
+    agent = AgentController(
+        first, FakeMCP(), llm_factory=lambda _provider, _model: second
+    )
+
+    await agent.start()
+    agent.set_provider("openrouter", "openrouter-model")
+    await agent.start()
+
+    assert first.closed is True
+    assert second.closed is False
+
+
 @pytest.mark.asyncio
 async def test_only_discovered_tools_are_exposed() -> None:
     llm = ScriptedLLM([text_response("ok")])

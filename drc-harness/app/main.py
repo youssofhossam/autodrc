@@ -17,13 +17,15 @@ from dotenv import load_dotenv
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.agent.controller import AgentController
-from app.config import ConfigError, Settings
+from app.config import PROVIDERS, ConfigError, Settings
 from app.gui.dialogs import show_startup_error
 from app.gui.icons import app_icon
-from app.gui.models import AppInfo
+from app.gui.models import AppInfo, ProviderInfo
 from app.gui.theme import apply_theme
 from app.gui.window import ChatWindow
-from app.llm.gemini import GeminiClient, GeminiError
+from app.llm import create_llm
+from app.llm.gemini import GeminiError
+from app.llm.openrouter import OpenRouterError
 from app.mcp_client.client import MCPClient, MCPConfigError, load_server_configs
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -63,7 +65,11 @@ def main() -> int:
         return 2
 
     log_file = setup_logging(settings.log_level)
-    logger.info("Starting autodrc. Model=%s", settings.gemini_model)
+    logger.info(
+        "Starting autodrc. Provider=%s Model=%s",
+        settings.llm_provider,
+        settings.model,
+    )
 
     try:
         servers = load_server_configs(settings.mcp_config_path)
@@ -77,17 +83,13 @@ def main() -> int:
         return 2
 
     try:
-        llm = GeminiClient(
-            api_key=settings.gemini_api_key,
-            model=settings.gemini_model,
-            system_instruction=settings.system_instruction,
-            temperature=settings.temperature,
-        )
-    except GeminiError as exc:
-        logger.error("Gemini configuration error: %s", exc)
+        llm = create_llm(settings)
+    except (GeminiError, OpenRouterError) as exc:
+        logger.error("Model provider configuration error: %s", exc)
         show_startup_error(
-            "autodrc — Gemini configuration error",
-            f"The Gemini client could not be created.\n\n{exc}",
+            "autodrc — Model configuration error",
+            f"The {settings.llm_provider.title()} client could not be created.\n\n"
+            f"{exc}",
             traceback.format_exc(),
         )
         return 2
@@ -108,17 +110,29 @@ def main() -> int:
         mcp,
         max_iterations=settings.max_tool_iterations,
         max_tool_result_chars=settings.max_tool_result_chars,
+        llm_factory=lambda provider, model: create_llm(
+            settings, provider=provider, model=model
+        ),
     )
 
     info = AppInfo(
-        model=settings.gemini_model,
-        api_key_configured=bool(settings.gemini_api_key),
+        provider=settings.llm_provider,
+        model=settings.model,
+        api_key_configured=settings.api_key_configured,
         mcp_servers=tuple(server.name for server in servers),
         mcp_config_path=str(settings.mcp_config_path),
         max_iterations=settings.max_tool_iterations,
         max_result_chars=settings.max_tool_result_chars,
         temperature=settings.temperature,
         log_file=str(log_file),
+        providers=tuple(
+            ProviderInfo(
+                provider=name,
+                model=settings.model_for(name),
+                api_key_configured=settings.api_key_configured_for(name),
+            )
+            for name in PROVIDERS
+        ),
     )
 
     window = ChatWindow(

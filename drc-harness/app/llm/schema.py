@@ -32,17 +32,38 @@ _JSON_SCHEMA_TYPE_TO_GEMINI = {
 
 
 @dataclass(frozen=True)
-class GeminiToolSet:
-    """Gemini declarations plus the mapping back to the original MCP tools."""
+class ToolSpec:
+    """A provider-neutral function declaration for one MCP tool.
+
+    Names are already sanitized and unique. `parameters` is the original MCP
+    JSON Schema, which OpenAI-compatible APIs such as OpenRouter accept
+    directly.
+    """
+
+    name: str
+    description: str
+    parameters: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class ToolSet:
+    """Function specs plus the mapping back to the original MCP tools."""
 
     mcp_tools: tuple[MCPTool, ...]
-    declarations: tuple[types.FunctionDeclaration, ...]
+    specs: tuple[ToolSpec, ...]
     by_function_name: Mapping[str, MCPTool]
 
     def resolve(self, function_name: str) -> MCPTool | None:
-        """Find the MCP tool Gemini referred to, or None if it was invented."""
+        """Find the MCP tool the model referred to, or None if it was invented."""
 
         return self.by_function_name.get(function_name)
+
+
+@dataclass(frozen=True)
+class GeminiToolSet(ToolSet):
+    """A neutral tool set plus Gemini's own function declarations."""
+
+    declarations: tuple[types.FunctionDeclaration, ...]
 
     def as_gemini_tools(self) -> list[types.Tool]:
         if not self.declarations:
@@ -50,32 +71,48 @@ class GeminiToolSet:
         return [types.Tool(function_declarations=list(self.declarations))]
 
 
-def build_tool_set(mcp_tools: Sequence[MCPTool]) -> GeminiToolSet:
-    """Create unique Gemini declarations for every discovered MCP tool."""
+def build_specs(
+    mcp_tools: Sequence[MCPTool],
+) -> tuple[tuple[ToolSpec, ...], dict[str, MCPTool]]:
+    """Create unique, provider-neutral specs for every discovered MCP tool."""
 
     used_names: set[str] = set()
-    declarations: list[types.FunctionDeclaration] = []
+    specs: list[ToolSpec] = []
     by_name: dict[str, MCPTool] = {}
 
     for tool in mcp_tools:
         function_name = _unique_function_name(tool, used_names)
         used_names.add(function_name)
-        description = _tool_description(tool)
-        parameters = json_schema_to_gemini(tool.input_schema)
-
-        declarations.append(
-            types.FunctionDeclaration(
+        specs.append(
+            ToolSpec(
                 name=function_name,
-                description=description,
-                parameters=parameters,
+                description=_tool_description(tool),
+                parameters=tool.input_schema,
             )
         )
         by_name[function_name] = tool
 
+    return tuple(specs), by_name
+
+
+def build_tool_set(mcp_tools: Sequence[MCPTool]) -> GeminiToolSet:
+    """Create unique Gemini declarations for every discovered MCP tool."""
+
+    specs, by_name = build_specs(mcp_tools)
+    declarations = tuple(
+        types.FunctionDeclaration(
+            name=spec.name,
+            description=spec.description,
+            parameters=json_schema_to_gemini(spec.parameters),
+        )
+        for spec in specs
+    )
+
     return GeminiToolSet(
         mcp_tools=tuple(mcp_tools),
-        declarations=tuple(declarations),
+        specs=specs,
         by_function_name=MappingProxyType(by_name),
+        declarations=declarations,
     )
 
 

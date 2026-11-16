@@ -187,7 +187,7 @@ class AssistantMessage(QWidget):
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(7)
-        name = QLabel("Gemini")
+        name = QLabel("Assistant")
         name.setObjectName("AssistantMeta")
         header.addWidget(name)
         if model:
@@ -573,7 +573,9 @@ class EmptyState(QWidget):
             content.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
 
         content.addSpacing(14)
-        footnote = QLabel("Gemini can make mistakes. Verify important tool results.")
+        footnote = QLabel(
+            "The assistant can make mistakes. Verify important tool results."
+        )
         footnote.setObjectName("EmptyFootnote")
         footnote.setAlignment(Qt.AlignmentFlag.AlignCenter)
         content.addWidget(footnote)

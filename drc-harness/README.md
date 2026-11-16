@@ -1,18 +1,20 @@
 # autodrc
 
-autodrc is a small desktop chatbot that lets Google Gemini discover and call
-tools on local MCP servers. The UI is built with **PySide6 (Qt 6)** and runs on
-the desktop as a native application — no browser or web frontend.
+autodrc is a small desktop chatbot that lets a configurable model provider
+(Google Gemini or OpenRouter) discover and call tools on local MCP servers. The
+UI is built with **PySide6 (Qt 6)** and runs on the desktop as a native
+application — no browser or web frontend.
 
-The agent loop, Gemini adapter, and MCP client live in `app/agent`,
+The agent loop, provider adapters, and MCP client live in `app/agent`,
 `app/llm`, and `app/mcp_client`. The GUI only talks to the agent through a small
-protocol and never imports Gemini or the MCP SDK directly.
+protocol and never imports a provider SDK or the MCP SDK directly.
 
 ---
 
 ## Installation
 
-Requirements: Python 3.12+, PySide6, and access to the Gemini API.
+Requirements: Python 3.12+, PySide6, and API access to Google Gemini or
+OpenRouter.
 
 ### Clone the repo
 
@@ -44,36 +46,59 @@ sudo apt update
 sudo apt install libxcb-cursor0
 ```
 
-### Configure Gemini
+### Configure the model provider
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` and choose a provider.
+
+**Google Gemini (default):**
 
 ```env
+LLM_PROVIDER=gemini
 GEMINI_API_KEY=your_real_key
 GEMINI_MODEL=gemini-2.5-flash
 ```
+
+**OpenRouter:**
+
+```env
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_MODEL=google/gemini-2.5-flash
+```
+
+OpenRouter exposes many models behind one API. The chosen model must support
+tool calling; models without tool support return an API error that is shown in
+the transcript and log.
 
 #### Configuration reference
 
 | Variable | Required | Default | Meaning |
 | --- | --- | --- | --- |
-| `GEMINI_API_KEY` | yes | — | Google AI Studio API key |
-| `GEMINI_MODEL` | yes | — | Model that supports function calling |
-| `GEMINI_SYSTEM_INSTRUCTION` | no | built-in | Override the system instruction |
-| `GEMINI_TEMPERATURE` | no | SDK default | 0.0–2.0 |
-| `MAX_TOOL_ITERATIONS` | no | `8` | Maximum Gemini requests per user turn |
-| `MAX_TOOL_RESULT_CHARS` | no | `20000` | Truncate huge MCP results sent to Gemini |
+| `LLM_PROVIDER` | no | `gemini` | `gemini` or `openrouter` |
+| `GEMINI_API_KEY` | when Gemini | — | Google AI Studio API key |
+| `GEMINI_MODEL` | when Gemini | — | Gemini model that supports function calling |
+| `OPENROUTER_API_KEY` | when OpenRouter | — | Key from https://openrouter.ai/keys |
+| `OPENROUTER_MODEL` | when OpenRouter | — | Tool-capable OpenRouter model ID |
+| `OPENROUTER_BASE_URL` | no | `https://openrouter.ai/api/v1` | Override the API endpoint |
+| `OPENROUTER_SITE_URL` | no | — | Sent as the `HTTP-Referer` attribution header |
+| `OPENROUTER_APP_NAME` | no | `autodrc` | Sent as the `X-Title` attribution header |
+| `LLM_SYSTEM_INSTRUCTION` | no | built-in | Override the system instruction (falls back to `GEMINI_SYSTEM_INSTRUCTION`) |
+| `LLM_TEMPERATURE` | no | SDK default | 0.0–2.0; falls back to `GEMINI_TEMPERATURE` / `OPENROUTER_TEMPERATURE` |
+| `MAX_TOOL_ITERATIONS` | no | `8` | Maximum model requests per user turn |
+| `MAX_TOOL_RESULT_CHARS` | no | `20000` | Truncate huge MCP results sent to the model |
 | `MCP_CONFIRM_TOOL_CALLS` | no | `true` | Initial state of the confirmation checkbox |
 | `MCP_CONFIG_PATH` | no | `mcp_servers.json` | Server configuration file |
 | `LOG_LEVEL` | no | `INFO` | Python logging level |
 
-The model can also be changed for the current session from
-**Settings → Model** in the app. The environment file remains the source of
-truth on the next launch.
+The provider and model can also be changed for the current session from
+**Settings → Assistant**. Only providers with an API key configured are offered,
+and the conversation continues across a switch. `LLM_PROVIDER` still chooses the
+provider at startup; the environment file remains the source of truth on the
+next launch.
 
 ### Configure the MCP server
 
@@ -129,7 +154,7 @@ MCP server entries support:
 Start KLayout with the klink plugin before asking questions that need live
 layout tools. The app still starts and lists tools without it; KLayout-dependent
 calls return a server-side connection error, which is shown in the transcript
-and passed back to Gemini.
+and passed back to the model.
 
 ### GUI overview
 
@@ -147,15 +172,15 @@ and passed back to Gemini.
 - **Status** — the header pill shows Connecting, Ready, Thinking, Running a
   tool, Error, or Offline. MCP connection failures surface as a banner with a
   retry action.
-- **Settings** (`Ctrl+,`) — current model, API-key status (never the key
-  itself), MCP server list and connection state, tool count, confirmation
+- **Settings** (`Ctrl+,`) — provider, current model, API-key status (never the
+  key itself), MCP server list and connection state, tool count, confirmation
   behavior, auto-expand, and the log-file path.
 - **Tool confirmation** — enabled by default. A dialog shows the exact tool name
   and arguments before execution; denying the call returns an error response to
-  Gemini instead of executing it.
+  the model instead of executing it.
 
 Conversations are kept in memory for the lifetime of the process. Switching
-conversations restores both the GUI transcript and the agent's Gemini history
+conversations restores both the GUI transcript and the agent's history
 snapshot.
 
 ### Keyboard shortcuts
@@ -193,8 +218,10 @@ exception and traceback.
 │   │   ├── controller.py       # manual agentic loop
 │   │   └── events.py           # GUI-facing event dataclasses
 │   ├── llm/
-│   │   ├── gemini.py           # Gemini adapter
-│   │   └── schema.py           # MCP JSON Schema -> Gemini Schema
+│   │   ├── factory.py          # selects the configured provider
+│   │   ├── gemini.py           # native Gemini adapter
+│   │   ├── openrouter.py       # OpenRouter (OpenAI-compatible) adapter
+│   │   └── schema.py           # provider-neutral tool specs + Gemini schema
 │   ├── mcp_client/
 │   │   └── client.py           # STDIO connection, discovery, tool calls
 │   └── gui/
@@ -237,13 +264,13 @@ flowchart LR
     subgraph Worker["Background thread — asyncio event loop"]
         Bridge["AgentBridge<br/>Qt signals"]
         Agent["AgentController<br/>manual agentic loop"]
-        LLM["GeminiClient<br/>google-genai"]
+        LLM["Provider client<br/>Gemini or OpenRouter"]
         MCP["MCPClient<br/>tool registry"]
         Conn["_ServerConnection<br/>owner task"]
     end
 
     subgraph External["Outside the app"]
-        Gemini["Google Gemini API"]
+        Gemini["Gemini or OpenRouter API"]
         Server["klink.mcp<br/>STDIO subprocess"]
         KLayout["KLayout / klink<br/>127.0.0.1:8765"]
     end
@@ -261,13 +288,13 @@ flowchart LR
     Bridge -->|Qt signals| Chat
 ```
 
-The GUI never calls Gemini or MCP directly. It only talks to the agent through
-`start()`, `send_message()`, `clear()`, `shutdown()`, and the small snapshot/model
-helpers. Tool activity arrives as `AgentEvent` objects, which
+The GUI never calls a model provider or MCP directly. It only talks to the agent
+through `start()`, `send_message()`, `clear()`, `shutdown()`, and the small
+snapshot/model helpers. Tool activity arrives as `AgentEvent` objects, which
 `AgentBridge` forwards to the Qt main thread as signals. The worker thread owns
 the asyncio loop; no blocking call runs on the GUI thread.
 
-The MCP layer has **no Gemini imports**. The Gemini layer has **no MCP SDK
+The MCP layer has **no provider imports**. The Gemini layer has **no MCP SDK
 imports**. The agent is the only place that understands both sides.
 
 ### The agentic loop
@@ -275,25 +302,33 @@ imports**. The agent is the only place that understands both sides.
 `AgentController.send_message()` appends the user message, discovers tools, then
 repeats up to `MAX_TOOL_ITERATIONS` times:
 
-1. Ask Gemini with the full history and tool declarations.
+1. Ask the model with the full history and tool declarations.
 2. Append the model turn to history unchanged.
 3. If there are no function calls, return the final text.
 4. Otherwise validate and execute each call in order, emitting status and tool
    events.
 5. Append one user-role turn containing all function responses.
-6. Continue until Gemini answers or the iteration limit is reached.
+6. Continue until the model answers or the iteration limit is reached.
 
-Multiple calls in one Gemini response run sequentially because tools may have
-side effects or depend on each other. Unknown tools, invalid arguments, denied
+Multiple calls in one response run sequentially because tools may have side
+effects or depend on each other. Unknown tools, invalid arguments, denied
 confirmations, and execution failures all become `{"error": ...}` function
-responses, so Gemini can correct itself or explain the failure.
+responses, so the model can correct itself or explain the failure.
+
+### Model providers
+
+The controller keeps history in Gemini `types.Content` form as the internal
+conversation representation. The native Gemini client sends it directly. The
+OpenRouter client translates it to and from OpenAI chat-completions messages on
+every request, including tool calls and tool results. MCP JSON Schema is passed
+to OpenRouter unchanged; only Gemini needs the schema converter.
 
 ### Streaming
 
-The Gemini adapter currently uses non-streaming requests. The GUI therefore does
+Both adapters currently use non-streaming requests. The GUI therefore does
 not fake token-by-token output: it shows an animated status pill, live tool
 cards, and a disabled composer while a turn is in progress. If streaming is
-added to the backend later, the event/bridge layer can forward chunks without
+added to the backends later, the event/bridge layer can forward chunks without
 changing the agent or GUI structure.
 
 ---
@@ -304,9 +339,9 @@ changing the agent or GUI structure.
 uv run pytest -q
 ```
 
-The suite covers the agent loop, Gemini/MCP mocking, schema conversion, GUI
-flows (offscreen Qt), Markdown rendering and escaping, history snapshots, and
-model changes. Run it with no display available; Qt uses
+The suite covers the agent loop, Gemini/OpenRouter and MCP mocking, schema
+conversion, GUI flows (offscreen Qt), Markdown rendering and escaping, history
+snapshots, and model changes. Run it with no display available; Qt uses
 `QT_QPA_PLATFORM=offscreen`.
 
 Useful checks:
@@ -342,13 +377,20 @@ PY
 
 ## Troubleshooting
 
-**`GEMINI_API_KEY is not set`**
-Copy `.env.example` to `.env` and fill in the key. Environment variables set in
-the shell take precedence over `.env`.
+**`GEMINI_API_KEY is not set` / `OPENROUTER_API_KEY is not set`**
+Copy `.env.example` to `.env` and fill in the key for the provider selected by
+`LLM_PROVIDER`. Environment variables set in the shell take precedence over
+`.env`.
 
-**Gemini returns 400/401/403**
-Check the key and the model name. The model must support function calling. Error
-text is redacted, but Google's message is preserved.
+**The provider returns 400/401/403**
+Check the key and the model name. The model must support function calling.
+With OpenRouter, a 404 usually means the model has no endpoint that supports
+tool use. Error text is redacted, but the provider's message is preserved.
+
+**OpenRouter returns 402 or 429**
+402 means the account has insufficient credits. 429 means a rate limit was hit;
+free models are limited aggressively. Wait, add credits, or choose another
+model.
 
 **`Could not start the Qt GUI: no display was detected`**
 Run the app in a desktop session, or set `QT_QPA_PLATFORM` (for example
@@ -372,12 +414,12 @@ The MCP server is running but KLayout/klink is not. Start KLayout with the klink
 plugin. Until then, only tools that do not require the live session will work.
 
 **A tool keeps being called until the iteration limit**
-Inspect the tool card in the transcript. Gemini may be retrying because the
+Inspect the tool card in the transcript. The model may be retrying because the
 server returned an error. Increase `MAX_TOOL_ITERATIONS` only after
 understanding the loop; the limit is a safety net.
 
 **The tool result is cut off**
-`MAX_TOOL_RESULT_CHARS` controls what is sent to Gemini. Tool cards cap the
+`MAX_TOOL_RESULT_CHARS` controls what is sent to the model. Tool cards cap the
 displayed result separately.
 
 **Unexpected error dialog**
@@ -388,7 +430,7 @@ Open the log file from Settings or the path above; the full traceback is there.
 ## Limitations
 
 - STDIO transport only.
-- Non-streaming Gemini responses.
+- Non-streaming responses from both providers.
 - In-memory conversations; no persistence across launches.
 - Tools only; MCP prompts/resources are not exposed.
 - The JSON Schema converter supports common keywords, not the entire standard.

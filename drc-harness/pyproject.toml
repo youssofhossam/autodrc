@@ -1,13 +1,14 @@
 [project]
 name = "autodrc"
 version = "0.1.0"
-description = "A PySide6 desktop chatbot that lets Gemini call tools on local MCP servers"
+description = "A PySide6 desktop chatbot that lets Gemini or OpenRouter call tools on local MCP servers"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "google-genai>=1.0,<2",
     "jsonschema>=4.20,<5",
     "mcp>=1.0,<2",
+    "openai>=1,<2",
     "pyside6>=6.6,<7",
     "python-dotenv>=1.0,<2",
 ]

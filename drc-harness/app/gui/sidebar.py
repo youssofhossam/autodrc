@@ -55,7 +55,7 @@ class Sidebar(QWidget):
         brand_text.setSpacing(0)
         title = QLabel("autodrc")
         title.setObjectName("BrandTitle")
-        subtitle = QLabel("Gemini · MCP tools")
+        subtitle = QLabel("AI assistant · MCP tools")
         subtitle.setObjectName("BrandSubtitle")
         brand_text.addWidget(title)
         brand_text.addWidget(subtitle)

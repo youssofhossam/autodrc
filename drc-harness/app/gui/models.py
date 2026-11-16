@@ -1,7 +1,8 @@
 """Presentation-side data models.
 
 These objects describe what the user sees. They are intentionally independent
-of Gemini and MCP types; the agent history is stored as an opaque snapshot.
+of the model provider and MCP types; the agent history is stored as an opaque
+snapshot.
 """
 
 from __future__ import annotations
@@ -13,6 +14,15 @@ from uuid import uuid4
 
 MessageKind = Literal["user", "assistant", "system", "error"]
 ToolStatus = Literal["pending", "running", "completed", "failed"]
+
+_PROVIDER_NAMES = {
+    "gemini": "Google Gemini",
+    "openrouter": "OpenRouter",
+}
+
+
+def provider_display_name(provider: str) -> str:
+    return _PROVIDER_NAMES.get(provider, provider.title())
 
 
 @dataclass
@@ -47,9 +57,23 @@ class Conversation:
 
 
 @dataclass(frozen=True)
+class ProviderInfo:
+    """One selectable provider and the model configured for it."""
+
+    provider: str
+    model: str
+    api_key_configured: bool
+
+    @property
+    def name(self) -> str:
+        return provider_display_name(self.provider)
+
+
+@dataclass(frozen=True)
 class AppInfo:
     """Read-only configuration shown in the settings dialog."""
 
+    provider: str
     model: str
     api_key_configured: bool
     mcp_servers: tuple[str, ...]
@@ -58,6 +82,25 @@ class AppInfo:
     max_result_chars: int
     temperature: float | None
     log_file: str
+    providers: tuple[ProviderInfo, ...] = ()
+
+    @property
+    def provider_name(self) -> str:
+        return provider_display_name(self.provider)
+
+    @property
+    def provider_options(self) -> tuple[ProviderInfo, ...]:
+        """Providers that can be selected, including the active one."""
+
+        if self.providers:
+            return self.providers
+        return (
+            ProviderInfo(
+                provider=self.provider,
+                model=self.model,
+                api_key_configured=self.api_key_configured,
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -65,6 +108,7 @@ class SettingsResult:
     model: str
     confirm_tool_calls: bool
     auto_expand_tools: bool
+    provider: str = ""
 
 
 def derive_title(text: str, limit: int = 42) -> str:

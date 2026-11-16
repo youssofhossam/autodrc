@@ -1,7 +1,7 @@
 """A small asyncio worker thread for GUI applications.
 
 Qt widgets must be driven from the main thread. This worker owns a separate
-event loop so the GUI can keep painting and responding to input while Gemini
+event loop so the GUI can keep painting and responding to input while model
 and MCP work runs in the background.
 """
 

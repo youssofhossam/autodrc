@@ -1,9 +1,10 @@
 # autodrc
 
 autodrc is a small desktop chatbot that shows how an LLM can **choose and call
-tools on a local MCP server**. It uses PySide6 (Qt 6), Google Gemini's native
-function calling, and the official MCP Python SDK. There is no agent framework:
-the loop is implemented directly in `app/agent/controller.py`.
+tools on a local MCP server**. It uses PySide6 (Qt 6), native Google Gemini
+function calling or OpenRouter's OpenAI-compatible API, and the official MCP
+Python SDK. There is no agent framework: the loop is implemented directly in
+`app/agent/controller.py`.
 
 The configured MCP server is the existing local `klink.mcp` server. Its tools
 are discovered at runtime; no tool names or schemas are hardcoded in the
@@ -16,18 +17,21 @@ application.
 - A dark, native Qt chat window with a collapsible conversation sidebar,
   distinct user/assistant messages, safe Markdown rendering, and syntax-
   highlighted code blocks.
-- An agentic loop: Gemini can request one or many tools, receive their results,
-  and continue until it produces a final answer.
+- An agentic loop: the model can request one or many tools, receive their
+  results, and continue until it produces a final answer.
+- Selectable model provider: native Google Gemini or OpenRouter (one endpoint
+  for many models).
 - Live MCP tool discovery over STDIO.
 - Collapsible tool activity cards showing server, tool, arguments, state
   (pending/running/completed/failed), and results.
 - A confirmation dialog before tool execution (on by default).
 - JSON Schema validation of every tool call.
-- A responsive GUI: all Gemini/MCP work runs on a background asyncio thread and
+- A responsive GUI: all model/MCP work runs on a background asyncio thread and
   reaches Qt as signals.
 - Friendly inline error cards plus a rotating technical log file.
-- Clean shutdown of the MCP server process and the Gemini client.
-- Unit tests with mocked Gemini/MCP responses and offscreen Qt GUI tests.
+- Clean shutdown of the MCP server process and the model client.
+- Unit tests with mocked Gemini/OpenRouter/MCP responses and offscreen Qt GUI
+  tests.
 
 ---
 
@@ -46,13 +50,13 @@ flowchart LR
     subgraph Worker["Background thread — asyncio event loop"]
         Bridge["AgentBridge<br/>Qt signals"]
         Agent["AgentController<br/>manual agentic loop"]
-        LLM["GeminiClient<br/>google-genai"]
+        LLM["Provider client<br/>Gemini or OpenRouter"]
         MCP["MCPClient<br/>tool registry"]
         Conn["_ServerConnection<br/>owner task"]
     end
 
     subgraph External["Outside the app"]
-        Gemini["Google Gemini API"]
+        Gemini["Gemini or OpenRouter API"]
         Server["klink.mcp<br/>STDIO subprocess"]
         KLayout["KLayout / klink<br/>127.0.0.1:8765"]
     end
@@ -71,14 +75,14 @@ flowchart LR
     Status --- Worker
 ```
 
-The GUI never calls Gemini or MCP directly. It only talks to the agent through
-`start()`, `send_message()`, `clear()`, `shutdown()`, plus small helpers to
-snapshot/restore history and change the model. Tool activity arrives as
+The GUI never calls a model provider or MCP directly. It only talks to the agent
+through `start()`, `send_message()`, `clear()`, `shutdown()`, plus small helpers
+to snapshot/restore history and change the model. Tool activity arrives as
 `AgentEvent` objects. `AgentBridge` runs on the GUI thread, submits coroutines to
 the worker loop, and re-emits worker results as Qt signals, so no Qt widget is
 touched from a non-GUI thread. This keeps the GUI replaceable.
 
-The MCP layer has **no Gemini imports**. The Gemini layer has **no MCP SDK
+The MCP layer has **no provider imports**. The Gemini layer has **no MCP SDK
 imports**. The agent is the only place that understands both sides.
 
 ---
@@ -94,8 +98,10 @@ imports**. The agent is the only place that understands both sides.
 │   │   ├── controller.py       # the manual agentic loop
 │   │   └── events.py           # GUI-facing event dataclasses
 │   ├── llm/
-│   │   ├── gemini.py           # Gemini adapter
-│   │   └── schema.py           # MCP JSON Schema -> Gemini Schema
+│   │   ├── factory.py          # selects the configured provider
+│   │   ├── gemini.py           # native Gemini adapter
+│   │   ├── openrouter.py       # OpenRouter (OpenAI-compatible) adapter
+│   │   └── schema.py           # provider-neutral specs + Gemini schema
 │   ├── mcp_client/
 │   │   └── client.py           # STDIO connection, discovery, tool calls
 │   └── gui/
@@ -169,7 +175,7 @@ its stdin/stdout.
 `klink.mcp` also needs a running KLayout instance with the klink plugin for
 most geometry/DRC tools. Without it, the server can still start and list tools,
 but those calls return a connection error. That is a server-side condition;
-the chatbot reports it and passes the error back to Gemini.
+the chatbot reports it and passes the error back to the model.
 
 ### Why the connection lives in an owner task
 
@@ -190,7 +196,10 @@ the error is reported.
 
 ---
 
-## How Gemini function calling works
+## How function calling works
+
+The controller keeps conversation history in Gemini `types.Content` form. With
+`LLM_PROVIDER=gemini` that history is sent natively:
 
 1. MCP tools are converted into `types.FunctionDeclaration` objects.
 2. They are sent as `types.Tool(function_declarations=[...])` with the
@@ -204,7 +213,17 @@ the error is reported.
 6. Gemini receives the updated conversation and either requests more tools or
    returns the final text.
 
-Two details matter:
+With `LLM_PROVIDER=openrouter`, `OpenRouterClient` translates that same history
+on every request:
+
+- user text becomes an OpenAI `user` message;
+- a model turn becomes an `assistant` message with `tool_calls`;
+- function responses become `tool` messages keyed by `tool_call_id`;
+- MCP JSON Schema is sent unchanged as each tool's `parameters`;
+- the OpenAI completion is wrapped back into a `types.GenerateContentResponse`
+  so the controller loop is identical for both providers.
+
+Two details matter for the native Gemini path:
 
 - `AutomaticFunctionCallingConfig(disable=True)` is set. The SDK must not run
   anything implicitly; execution is visible in this codebase.
@@ -215,13 +234,13 @@ Function responses use:
 
 ```python
 types.FunctionResponse(
-    name="klink_find_tools",          # the name Gemini used
+    name="klink_find_tools",          # the name the model used
     response={"result": "..."},        # or {"error": "..."}
 )
 ```
 
 Unknown tools, invalid arguments, denied confirmations, and execution failures
-all become `{"error": ...}` function responses. Gemini can then correct the
+all become `{"error": ...}` function responses. The model can then correct the
 call or explain the failure. Nothing is silently swallowed.
 
 ---
@@ -233,11 +252,11 @@ The loop is in `AgentController.send_message()` and has a hard iteration limit
 
 ```text
 append the user message to history
-discover MCP tools and build Gemini declarations
+discover MCP tools and build provider tool declarations
 
 repeat up to MAX_TOOL_ITERATIONS times:
-    ask Gemini with the full history + declarations
-    append Gemini's model turn to history
+    ask the model with the full history + declarations
+    append the model turn to history
 
     if there are no function calls:
         return the final text (error if there is also no text)
@@ -256,8 +275,8 @@ if the limit is reached:
     raise IterationLimitError with a clear message
 ```
 
-Multiple calls in one Gemini response are executed sequentially in the order
-Gemini returned them. Sequential execution is intentional: tools may have
+Multiple calls in one model response are executed sequentially in the order the
+model returned them. Sequential execution is intentional: tools may have
 side effects or depend on each other, and the MCP server processes requests on
 one connection.
 
@@ -344,11 +363,11 @@ The rest of the app does not need to change.
 ## Security notes
 
 - **Credentials stay in the environment.** `.env` is gitignored. The GUI and
-  logs never print the key. Gemini API error text is redacted before it reaches
-  the user.
-- **Only discovered tools can run.** Gemini's requested name is resolved
-  through the `GeminiToolSet` built from the current MCP discovery results. An
-  invented name is rejected and returned to Gemini as an error.
+  logs never print the key. Gemini and OpenRouter API error text is redacted
+  before it reaches the user.
+- **Only discovered tools can run.** The model's requested name is resolved
+  through the `ToolSet` built from the current MCP discovery results. An
+  invented name is rejected and returned to the model as an error.
 - **Arguments are validated** with `jsonschema` against the original MCP input
   schema before any call.
 - **No arbitrary code or shell execution.** There is no `eval`, `exec`, or
@@ -362,8 +381,8 @@ The rest of the app does not need to change.
 - **Tool descriptions and results are treated as untrusted data.** The system
   instruction says not to follow instructions found inside them, and the GUI
   visually separates tool output from assistant text.
-- **Large results are truncated** before being sent to Gemini, limiting context
-  flooding.
+- **Large results are truncated** before being sent to the model, limiting
+  context flooding.
 
 There is no automatic approval of destructive operations. If a server exposes
 a destructive tool, the user sees and must approve the call by default.
@@ -394,13 +413,15 @@ The suite covers:
 | GUI conversation switching | `test_new_chat_and_restore_preserve_transcript` |
 | GUI error handling | `test_turn_failure_is_shown_inline_without_crashing` |
 | Schema conversion | `tests/test_schema_conversion.py` |
+| OpenRouter translation and errors | `tests/test_openrouter_client.py` |
+| Provider configuration | `tests/test_config.py` |
 | Markdown rendering and escaping | `tests/test_markdown.py` |
 | Unknown/invalid/malformed calls | agent tests |
 | Confirmation denial | `test_user_can_deny_a_tool_call` |
 
-MCP and Gemini are mocked in the agent tests. GUI tests use a fake agent with
-offscreen Qt, so they run without a display. No dummy MCP server is created for
-the test suite.
+MCP and model providers are mocked in the agent/client tests. GUI tests use a
+fake agent with offscreen Qt, so they run without a display. No dummy MCP server
+is created for the test suite.
 
 The optional live check against the real `klink.mcp` server is:
 
@@ -439,13 +460,15 @@ handled by the converter and covered by regression tests.
 
 ## Troubleshooting
 
-**`GEMINI_API_KEY is not set`**  
-Copy `.env.example` to `.env` and fill in the key. Environment variables set in
-the shell take precedence over `.env`.
+**`GEMINI_API_KEY is not set` / `OPENROUTER_API_KEY is not set`**  
+Copy `.env.example` to `.env` and fill in the key for the provider selected by
+`LLM_PROVIDER`. Environment variables set in the shell take precedence over
+`.env`.
 
-**Gemini returns 400/401/403**  
+**The provider returns 400/401/403**  
 Check the key and the model name. The model must support function calling.
-Error text is redacted, but Google's message is preserved.
+Error text is redacted, but the provider's message is preserved. With
+OpenRouter, 402 means insufficient credits and 429 means a rate limit.
 
 **`MCP configuration file not found`**  
 Set `MCP_CONFIG_PATH` to the correct file, or run from the project directory so
@@ -491,8 +514,9 @@ caps display at 8,000 characters per result.
   function-response formatting are all visible in one file.
 - **Explicit schema conversion.** MCP and Gemini do not use identical schema
   formats; the translation is deliberate and tested rather than magical.
+  OpenRouter accepts MCP JSON Schema directly, so it skips that converter.
 - **Provider boundary.** The MCP client returns `MCPTool` and `ToolResult`
-  dataclasses. The Gemini layer maps those to declarations and API calls.
+  dataclasses. Provider clients map those to declarations and API calls.
 - **GUI boundary.** The GUI knows only the `ChatAgent` protocol and event
   dataclasses. It does not import `google-genai` or the MCP SDK.
 - **Thread boundary.** Qt widgets live on the main thread. `AgentBridge` submits
@@ -510,6 +534,6 @@ caps display at 8,000 characters per result.
 - The JSON Schema converter supports common keywords, not the entire standard.
 - Very large tool sets consume context. The server exposes 196 tools when
   KLayout is connected, producing roughly 200 KB of declarations. This works
-  with current Gemini models, but it is a real token/request-size cost.
+  with current models, but it is a real token/request-size cost.
 - KLayout-dependent tools require a running KLayout/klink session.
 - Confirmation pauses the agent until the user answers (five-minute timeout).

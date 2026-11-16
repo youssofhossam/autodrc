@@ -1,4 +1,4 @@
-"""The agent controller: the manual Gemini <-> MCP tool-calling loop."""
+"""The agent controller: the manual model <-> MCP tool-calling loop."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from app.agent.events import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from app.llm.schema import GeminiToolSet
+from app.llm.schema import ToolSet
 from app.mcp_client.client import MCPTool, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -32,19 +32,22 @@ class AgentError(RuntimeError):
 
 
 class IterationLimitError(AgentError):
-    """Gemini kept requesting tools after the configured limit."""
+    """The model kept requesting tools after the configured limit."""
 
 
 class LLMClient(Protocol):
-    def build_tools(self, mcp_tools: Sequence[MCPTool]) -> GeminiToolSet: ...
+    def build_tools(self, mcp_tools: Sequence[MCPTool]) -> ToolSet: ...
 
     async def generate(
         self,
         contents: Sequence[types.Content],
-        tool_set: GeminiToolSet,
+        tool_set: ToolSet,
     ) -> types.GenerateContentResponse: ...
 
     async def aclose(self) -> None: ...
+
+
+LLMFactory = Callable[[str, str], LLMClient]
 
 
 class ToolProvider(Protocol):
@@ -70,12 +73,15 @@ class AgentController:
         max_iterations: int = 8,
         max_tool_result_chars: int = 20_000,
         confirm_tool: ConfirmationCallback | None = None,
+        llm_factory: LLMFactory | None = None,
     ) -> None:
         if max_iterations < 1:
             raise ValueError("max_iterations must be at least 1.")
         if max_tool_result_chars < 100:
             raise ValueError("max_tool_result_chars must be at least 100.")
         self._llm = llm
+        self._llm_factory = llm_factory
+        self._retired_llms: list[LLMClient] = []
         self._mcp = mcp
         self._max_iterations = max_iterations
         self._max_tool_result_chars = max_tool_result_chars
@@ -103,17 +109,47 @@ class AgentController:
         return str(getattr(self._llm, "model", "") or "")
 
     def set_model(self, model: str) -> None:
-        """Change the Gemini model used for subsequent turns."""
+        """Change the model used for subsequent turns."""
 
         name = model.strip()
         if not name:
-            raise AgentError("The Gemini model name cannot be empty.")
+            raise AgentError("The model name cannot be empty.")
         if self._request_lock.locked():
             raise AgentError("Cannot change the model while a request is running.")
         setter = getattr(self._llm, "set_model", None)
         if setter is None:
-            raise AgentError("This Gemini client does not support changing models.")
+            raise AgentError("This client does not support changing models.")
         setter(name)
+
+    def set_provider(self, provider: str, model: str) -> None:
+        """Replace the LLM client so later turns use another provider.
+
+        The conversation history is provider-neutral, so the current chat
+        continues across the switch. The previous client is closed on the
+        worker thread before the next request.
+        """
+
+        name = model.strip()
+        if not name:
+            raise AgentError("The model name cannot be empty.")
+        if self._request_lock.locked():
+            raise AgentError(
+                "Cannot change the provider while a request is running."
+            )
+        if self._llm_factory is None:
+            raise AgentError("This client does not support changing providers.")
+
+        new_llm = self._llm_factory(provider.strip().lower(), name)
+        self._retired_llms.append(self._llm)
+        self._llm = new_llm
+
+    async def _close_retired_llms(self) -> None:
+        while self._retired_llms:
+            client = self._retired_llms.pop()
+            try:
+                await client.aclose()
+            except Exception:  # noqa: BLE001 - cleanup must not fail a turn
+                logger.warning("Could not close a retired LLM client.", exc_info=True)
 
     def snapshot_history(self) -> tuple[types.Content, ...]:
         """Return a deep copy of the history that can be restored later.
@@ -141,6 +177,7 @@ class AgentController:
     async def start(self) -> None:
         """Connect to the MCP servers and keep them alive."""
 
+        await self._close_retired_llms()
         if self._started and self._mcp_is_connected():
             return
         async with self._start_lock:
@@ -171,6 +208,7 @@ class AgentController:
                     self._started = False
             finally:
                 await self._llm.aclose()
+                await self._close_retired_llms()
 
     def clear(self) -> None:
         """Forget the conversation. The GUI only calls this while idle."""
@@ -186,9 +224,9 @@ class AgentController:
         user_text: str,
         on_event: EventSink | None = None,
     ) -> str:
-        """Run one complete agentic turn and return Gemini's final text.
+        """Run one complete agentic turn and return the model's final text.
 
-        The loop is deliberately visible here: ask Gemini, execute any
+        The loop is deliberately visible here: ask the model, execute any
         requested tools, append their responses, ask again, repeat.
         """
 
@@ -234,7 +272,7 @@ class AgentController:
                 final_text = "\n".join(text_parts).strip()
                 if not final_text:
                     raise AgentError(
-                        "Gemini returned neither text nor a function call."
+                        "The model returned neither text nor a function call."
                     )
                 return final_text
 
@@ -251,7 +289,7 @@ class AgentController:
             self._contents.append(types.Content(role="user", parts=function_responses))
 
         raise IterationLimitError(
-            f"Stopped after {self._max_iterations} Gemini requests because "
+            f"Stopped after {self._max_iterations} model requests because "
             "the model kept requesting tools. Increase MAX_TOOL_ITERATIONS "
             "or rephrase the request."
         )
@@ -259,7 +297,7 @@ class AgentController:
     async def _handle_function_call(
         self,
         call: types.FunctionCall,
-        tool_set: GeminiToolSet,
+        tool_set: ToolSet,
         emit: Callable[[AgentEvent], None],
     ) -> types.Part:
         """Validate and execute one function call, returning its response part."""
@@ -335,7 +373,7 @@ class AgentController:
             reason = getattr(feedback, "block_reason", None)
             suffix = f" (reason: {reason})" if reason else ""
             raise AgentError(
-                "Gemini returned no candidates. The prompt may have been blocked"
+                "The model returned no candidates. The prompt may have been blocked"
                 f"{suffix}."
             )
 
@@ -344,7 +382,7 @@ class AgentController:
         if content is None:
             finish_reason = getattr(candidate, "finish_reason", None)
             raise AgentError(
-                "Gemini returned an empty response"
+                "The model returned an empty response"
                 + (f" (finish reason: {finish_reason})." if finish_reason else ".")
             )
         return content

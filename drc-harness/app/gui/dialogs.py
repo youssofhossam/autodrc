@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QPainter, QPaintEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -23,14 +23,38 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.icons import icon
-from app.gui.models import AppInfo, SettingsResult
+from app.gui.models import AppInfo, ProviderInfo, SettingsResult, provider_display_name
 from app.gui.theme import COLORS
 
-_COMMON_MODELS = (
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash-lite",
-)
+_COMMON_MODELS = {
+    "gemini": (
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash-lite",
+    ),
+    "openrouter": (
+        "google/gemini-2.5-flash",
+        "anthropic/claude-sonnet-4",
+        "openai/gpt-4o",
+        "meta-llama/llama-3.3-70b-instruct",
+    ),
+}
+
+
+class _ChevronComboBox(QComboBox):
+    """Combo box that draws a chevron, making the drop-down affordance explicit."""
+
+    _ARROW_WIDTH = 22
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        super().paintEvent(event)
+        pixmap = icon("chevron-down", COLORS["text_muted"], 12).pixmap(12, 12)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        x = self.width() - self._ARROW_WIDTH + (self._ARROW_WIDTH - 12) // 2
+        y = (self.height() - 12) // 2
+        painter.drawPixmap(x, y, pixmap)
+        painter.end()
 
 
 class SettingsDialog(QDialog):
@@ -124,6 +148,34 @@ class SettingsDialog(QDialog):
     def _build_assistant_section(self, model: str) -> QWidget:
         card, layout = _section_card("Assistant")
 
+        self._provider_models: dict[str, str] = {
+            option.provider: option.model for option in self._info.provider_options
+        }
+        self._provider_models[self._info.provider] = model
+        self._last_provider = ""
+
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        label = QLabel("Provider")
+        label.setObjectName("FieldLabel")
+        label.setFixedWidth(130)
+        row.addWidget(label)
+        self.provider_combo = _ChevronComboBox()
+        self.provider_combo.setObjectName("DialogCombo")
+        for option in self._selectable_providers():
+            self.provider_combo.addItem(option.name, option.provider)
+        current = self.provider_combo.findData(self._info.provider)
+        self.provider_combo.setCurrentIndex(max(0, current))
+        self.provider_combo.setEnabled(not self._busy)
+        self.provider_combo.setToolTip(
+            "Only providers with an API key configured can be selected."
+        )
+        self.provider_combo.currentIndexChanged.connect(
+            self._on_provider_changed
+        )
+        row.addWidget(self.provider_combo, 1)
+        layout.addLayout(row)
+
         row = QHBoxLayout()
         row.setSpacing(12)
         label = QLabel("Model")
@@ -134,21 +186,14 @@ class SettingsDialog(QDialog):
         self.model_combo.setObjectName("DialogCombo")
         self.model_combo.setEditable(True)
         self.model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        choices = [model, *(_COMMON_MODELS if model not in _COMMON_MODELS else ())]
-        self.model_combo.addItems(choices)
-        self.model_combo.setCurrentText(model)
         self.model_combo.setEnabled(not self._busy)
         row.addWidget(self.model_combo, 1)
         layout.addLayout(row)
 
-        hint = QLabel(
-            "Model names are passed to Gemini as-is. Changing the model applies "
-            "to the next message."
-            + (" Waiting for the current response…" if self._busy else "")
-        )
-        hint.setObjectName("HintLabel")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        self._provider_hint = QLabel()
+        self._provider_hint.setObjectName("HintLabel")
+        self._provider_hint.setWordWrap(True)
+        layout.addWidget(self._provider_hint)
 
         layout.addWidget(_separator())
         key_row = QHBoxLayout()
@@ -157,16 +202,8 @@ class SettingsDialog(QDialog):
         key_label.setObjectName("FieldLabel")
         key_label.setFixedWidth(130)
         key_row.addWidget(key_label)
-        key_state = QLabel(
-            "●  Configured · value hidden"
-            if self._info.api_key_configured
-            else "●  Not configured"
-        )
-        key_state.setStyleSheet(
-            f"color: {COLORS['success'] if self._info.api_key_configured else COLORS['danger']};"
-            "font-size: 9pt;"
-        )
-        key_row.addWidget(key_state, 1)
+        self._key_state = QLabel()
+        key_row.addWidget(self._key_state, 1)
         layout.addLayout(key_row)
 
         layout.addLayout(
@@ -180,7 +217,85 @@ class SettingsDialog(QDialog):
         layout.addLayout(
             _value_row("Max tool steps", str(self._info.max_iterations))
         )
+
+        self._on_provider_changed()
         return card
+
+    def _selectable_providers(self) -> tuple[ProviderInfo, ...]:
+        """Providers with a usable API key, always keeping the active one."""
+
+        options = tuple(
+            option
+            for option in self._info.provider_options
+            if option.api_key_configured or option.provider == self._info.provider
+        )
+        return options or self._info.provider_options
+
+    def _option_for(self, provider: str) -> ProviderInfo | None:
+        return next(
+            (
+                option
+                for option in self._info.provider_options
+                if option.provider == provider
+            ),
+            None,
+        )
+
+    def _current_provider(self) -> str:
+        value = self.provider_combo.currentData()
+        return str(value) if value else self._info.provider
+
+    def _on_provider_changed(self) -> None:
+        if self._last_provider:
+            self._provider_models[self._last_provider] = (
+                self.model_combo.currentText().strip()
+            )
+        provider = self._current_provider()
+        self._last_provider = provider
+
+        option = self._option_for(provider)
+        model = self._provider_models.get(provider) or (option.model if option else "")
+        common = _COMMON_MODELS.get(provider, ())
+        choices = [model] if model else []
+        choices.extend(candidate for candidate in common if candidate not in choices)
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        self.model_combo.addItems(choices)
+        self.model_combo.setCurrentText(model)
+        self.model_combo.blockSignals(False)
+
+        self._update_key_state(provider)
+        self._update_provider_hint(provider)
+
+    def _update_key_state(self, provider: str) -> None:
+        option = self._option_for(provider)
+        configured = (
+            option.api_key_configured
+            if option is not None
+            else provider == self._info.provider and self._info.api_key_configured
+        )
+        self._key_state.setText(
+            "●  Configured · value hidden"
+            if configured
+            else "●  Not configured"
+        )
+        self._key_state.setStyleSheet(
+            f"color: {COLORS['success'] if configured else COLORS['danger']};"
+            "font-size: 9pt;"
+        )
+
+    def _update_provider_hint(self, provider: str) -> None:
+        provider_hint = (
+            " The model must support tool calling."
+            if provider == "openrouter"
+            else ""
+        )
+        self._provider_hint.setText(
+            f"Model names are passed to {provider_display_name(provider)} as-is. "
+            "Changing the provider or model applies to the next message."
+            + provider_hint
+            + (" Waiting for the current response…" if self._busy else "")
+        )
 
     def _build_tool_section(
         self, confirm_tool_calls: bool, auto_expand_tools: bool
@@ -271,13 +386,14 @@ class SettingsDialog(QDialog):
         model = self.model_combo.currentText().strip()
         if not model:
             QMessageBox.warning(
-                self, "Invalid model", "Enter a Gemini model name before saving."
+                self, "Invalid model", "Enter a model name before saving."
             )
             return
         self._result = SettingsResult(
             model=model,
             confirm_tool_calls=self.confirm_check.isChecked(),
             auto_expand_tools=self.expand_check.isChecked(),
+            provider=self._current_provider(),
         )
         self.accept()
 
@@ -323,7 +439,9 @@ class ConfirmToolDialog(QDialog):
         title = QLabel("Approve tool call")
         title.setObjectName("DialogTitle")
         heading.addWidget(title)
-        subtitle = QLabel("Gemini wants to run a tool on a connected MCP server.")
+        subtitle = QLabel(
+            "The assistant wants to run a tool on a connected MCP server."
+        )
         subtitle.setObjectName("DialogSubtitle")
         subtitle.setWordWrap(True)
         heading.addWidget(subtitle)

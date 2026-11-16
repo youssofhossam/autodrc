@@ -41,6 +41,7 @@ from app.gui.models import (
     MessageItem,
     ToolItem,
     derive_title,
+    provider_display_name,
 )
 from app.gui.protocol import ChatAgent
 from app.gui.sidebar import Sidebar
@@ -138,6 +139,7 @@ class ChatWindow(QMainWindow):
         super().__init__()
         self._agent = agent
         self._info = app_info
+        self._provider = app_info.provider
         self._model = agent.model or app_info.model
         self._settings = _settings_store()
         self._conversations: list[Conversation] = []
@@ -453,7 +455,10 @@ class ChatWindow(QMainWindow):
         self._title_label.set_full_text(
             conversation.title if conversation is not None else "New chat"
         )
-        self._subtitle_label.setText(f"{self._model}  ·  MCP tools")
+        provider = provider_display_name(self._provider)
+        self._subtitle_label.setText(
+            f"{provider}  ·  {self._model}  ·  MCP tools"
+        )
 
     def _derive_title(self, conversation: Conversation, text: str) -> None:
         if conversation.title != "New chat":
@@ -655,8 +660,33 @@ class ChatWindow(QMainWindow):
 
     # ------------------------------------------------------------ settings
 
+    def _current_app_info(self) -> AppInfo:
+        """AppInfo updated with the session's live provider and model."""
+
+        options = tuple(
+            replace(option, model=self._model)
+            if option.provider == self._provider
+            else option
+            for option in self._info.provider_options
+        )
+        active = next(
+            (option for option in options if option.provider == self._provider),
+            None,
+        )
+        return replace(
+            self._info,
+            provider=self._provider,
+            model=self._model,
+            api_key_configured=(
+                active.api_key_configured
+                if active is not None
+                else self._info.api_key_configured
+            ),
+            providers=options,
+        )
+
     def _open_settings(self) -> None:
-        info = replace(self._info, model=self._model)
+        info = self._current_app_info()
         dialog = SettingsDialog(
             info,
             model=self._model,
@@ -671,8 +701,26 @@ class ChatWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         result = dialog.result_settings
+        provider = result.provider or self._provider
 
-        if result.model != self._model:
+        if provider != self._provider:
+            try:
+                self._agent.set_provider(provider, result.model)
+            except Exception as exc:  # noqa: BLE001 - show the backend error
+                QMessageBox.warning(
+                    self,
+                    "Could not change provider",
+                    f"The provider was not changed:\n\n{exc}",
+                )
+            else:
+                self._provider = provider
+                self._model = result.model
+                self._info = self._current_app_info()
+                self._update_header()
+                self._set_status(
+                    f"Ready · {provider_display_name(provider)}", "idle"
+                )
+        elif result.model != self._model:
             try:
                 self._agent.set_model(result.model)
             except Exception as exc:  # noqa: BLE001 - show the backend error
@@ -683,6 +731,7 @@ class ChatWindow(QMainWindow):
                 )
             else:
                 self._model = result.model
+                self._info = self._current_app_info()
                 self._update_header()
                 self._set_status("Ready", "idle")
 
@@ -765,7 +814,7 @@ class ChatWindow(QMainWindow):
             answer = QMessageBox.question(
                 self,
                 "Quit while working?",
-                "Gemini is still working on a response. Quit anyway?",
+                "The assistant is still working on a response. Quit anyway?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
