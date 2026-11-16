@@ -90,31 +90,75 @@ hand-picked subset. In this MCP server that is the **`drc.run`** RPC
 (`tools.klayout.drc_run`). When the user says "run drc-full", run the full
 deck; when they say "run the DRC", default to full.
 
+### 3.0 Which deck — resolve this before calling anything
+
+`drc.run` is a DRC-DSL **escape hatch**, not a PDK-aware DRC: it executes
+exactly the source you hand it. A result counts as "the DRC" of this project
+only if that source is the project's canonical deck.
+
+For this workspace the canonical deck is the Efabless/SkyWater sky130 deck:
+
+| Role | Path |
+|---|---|
+| Rule deck (FEOL + BEOL + offgrid) | `/home/ig/.klayout/salt/Efabless_sky130/tech/sky130/drc/sky130A_mr.drc` |
+| Toplevel wrapper that enables those groups | `/home/ig/.klayout/salt/Efabless_sky130/tech/sky130/macros/run_drc_full.lydrc` |
+| Flags the wrapper sets | `$feol = "true"`, `$beol = "true"`, `$offgrid = "true"` |
+
+- Pass the deck's **source text** as `code`. Reading a `.drc` / `.lydrc`
+  file is text handling, not layout parsing — it is allowed and expected.
+- No such deck on disk, or an unknown PDK? **Stop and ask.** Never invent
+  rules, never re-use an example deck, never report a number.
+- `sky130_drc.txt`, `*.lyrdb`, `*.lvsdb` are **reports** (marker / LVS
+  databases), never decks. Never pass one as `code`, never read it as the
+  rule source.
+- Never present the output of a hand-written or example deck as "the DRC".
+  Different thresholds and scoping make the counts meaningless: a 14-rule
+  sketch of sky130 once reported 187 "violations" on `variant_0.gds` where
+  the real deck reports 39, and every one of its categories was invented.
+- `ledit.run_drc` is L-Edit's own rule set and returns a count only. It is
+  not a substitute for `drc.run` on this layout.
+
 ### 3.1 How to call it (MCP only)
 
 ```jsonc
 {
-  "code": "<the full DRC deck, DRC-DSL source>",
+  "code": "<prologue from below + canonical deck source>",
   "output_rdb": "/abs/path/to/report.lyrdb",
   "result_mode": "summary",   // use "full" when item coordinates are needed
-  "top_cell": "DEV_TEST"      // only in standalone mode (with source()); omit in interactive mode
+  "top_cell": "<top cell from layout.info>"  // standalone mode only
 }
 ```
 
 Rules for the deck:
 
-- `report("title", $output_rdb)` is the **first line** — without the second
-  argument the RDB is never written and the run looks clean for the wrong
-  reason.
+- `report("title", <rdb path>)` must be called **with the second argument**
+  before any `output()`. Without it the RDB is never written and the run
+  looks clean for the wrong reason. The canonical deck already does this via
+  `$report`; an inline deck must put it first.
 - **Always use decimal points for dimensions**: `width(0.14)` is 0.14 µm;
   `width(14)` is database units and silently passes everything.
+- `drc.run` string-substitutes exactly three names: `$input_layout`,
+  `$output_rdb`, `$topcell` (from the parameters of the same name). The
+  Efabless deck uses different names — `$input`, `$report`, `$top_cell` —
+  plus the `$feol` / `$beol` / `$offgrid` flags, so give it a prologue:
+
+  ```text
+  $feol = "true"; $beol = "true"; $offgrid = "true"
+  $input = "<layout path>"; $top_cell = "<cell>"; $report = "<rdb path>"
+  <canonical deck source>
+  ```
+
+- `# %include` is resolved **relative to the script file**. `drc.run` writes
+  your source to a temp file under `/tmp`, so the wrapper's
+  `# %include ../drc/sky130A_mr.drc` will not resolve. Inline the deck source
+  after the prologue — that is the guaranteed route. An **absolute**
+  `# %include` may work, but confirm it by the category count (§3.2) before
+  trusting the result.
 - Omit `source()` to audit the layout currently shown in the view
   (interactive mode). In interactive mode the engine audits *whatever cell
   the view shows* — call `view.show_cell` first if you need a specific cell.
-- Include `source($input_layout)` only for standalone file audits, and then
-  pass `input_layout` + `top_cell`.
-- If the repo carries a deck file (e.g. `drc-full.drc` / `drc-full.lydrc`),
-  pass its source as `code` — do not re-implement rules inline.
+- Include `source($input_layout, $topcell)` only for standalone file audits,
+  and then pass `input_layout` + `top_cell`.
 
 ### 3.2 Getting the violations — through the MCP, always
 
@@ -127,6 +171,15 @@ The **same `drc.run` response already contains the violations**:
 - `exception` — non-null means the deck failed; report it verbatim
 - `rdb_file` — path to the `.lyrdb` if the user wants the native report
 
+Check that the deck actually ran before reading any count:
+
+- A full sky130 run registers on the order of **~295 categories**, all named
+  like PDK rules (`nwell.1`, `nwell.2a`, `licon.1`, `MR_licon.SP.1`, `li.3`).
+- Empty or tiny `categories`, or names that read like English sentences
+  (`diff.width < 0.15`, `met1.enclosing(mcon) < 0.03`), mean the wrong deck
+  ran. That is a **broken run, not a clean layout** — fix the deck, re-run,
+  and do not report the counts.
+
 Do **not** open the `.lyrdb` with Python, grep it, or recompute violations.
 If more detail is needed, re-run the same MCP call with
 `result_mode: "full"` (optionally narrowed by the deck's rule set) and read
@@ -136,15 +189,21 @@ the response.
 
 All-or-nothing:
 
-- **PASS** only when `exception == null` **and** `total_items == 0`.
+- **PASS** only when `exception == null` **and** `total_items == 0` **and**
+  the run used the canonical deck (§3.0).
 - **FAIL** otherwise: report the per-rule counts and, for `full` mode, the
   item locations. Never weaken, delete, or loosen a rule to make a run pass.
   If a rule is genuinely wrong for the process, say so explicitly, fix the
   deck, and re-run — and call out that the earlier pass was a deck bug.
 - Scope rules with `exclude_around` only for device-region geometry, and say
   so in the result summary.
-- State clearly that the verdict applies to the deck that was run; a
-  hand-written test deck is not a foundry signoff deck.
+- Every verdict names the deck that was run: deck path (or "inline, derived
+  from `<path>`"), the deck's release string when it has one, the flags, the
+  layout file, and the top cell. Counts from two different decks are never
+  comparable, and quoting "39 vs 187 violations" without that context is
+  misinformation.
+- A hand-written test deck is not a foundry signoff deck. If the canonical
+  deck is unavailable, say **"not verified"** — never substitute a sketch.
 
 ---
 
@@ -209,6 +268,9 @@ klink.KLinkClient(...) scripts                     -> NO
 c.show() / localhost:8082 pushes                   -> NO
 parsing .lyrdb / .lvsdb / .gds with Python         -> NO
 screenshots as verification                        -> NO
+hand-writing a deck instead of using the PDK deck  -> NO
+passing an .lyrdb / sky130_drc.txt as a deck       -> NO
+swapping in ledit.run_drc for drc.run              -> NO
 weakening a DRC/LVS rule to force a pass           -> NO
 deleting/closing the user's tab                    -> NO
 ```
@@ -230,17 +292,18 @@ Report the gap.
 
 ---
 
-## Appendix A — Reference `drc-full` call (SkyWater-style test deck)
+## Appendix A — `drc.run` call shape (NOT a deck)
 
-Shape of a real full-deck run on the live view. The deck is DRC-DSL source
-passed as a string — it is not Python. Replace the rule block with the
-project's full deck; keep the call shape.
+Use this only for the *shape* of the request. The `code` value is a
+placeholder: it must contain the canonical deck's source (§3.0) behind the
+prologue (§3.1). There is deliberately no rule block here — a rule block
+written from memory is not the project's DRC, and its counts are fiction.
 
 ```jsonc
 // tools.klayout.drc_run
 {
-  "code": "report(\"DEV_TEST full DRC\", $output_rdb)\n\ndiff   = input(65, 20)\npoly   = input(66, 20)\nlicon1 = input(66, 44)\nli1    = input(67, 20)\nmcon   = input(67, 44)\nmet1   = input(68, 20)\nnwell  = input(64, 20)\n\ndiff.width(0.15).output(\"diff.width < 0.15\")\ndiff.space(0.27).output(\"diff.space < 0.27\")\npoly.width(0.15).output(\"poly.width < 0.15\")\npoly.space(0.21).output(\"poly.space < 0.21\")\nlicon1.width(0.17).output(\"licon1.size < 0.17\")\nlicon1.space(0.19).output(\"licon1.space < 0.19\")\nli1.width(0.17).output(\"li1.width < 0.17\")\nli1.space(0.17).output(\"li1.space < 0.17\")\nmcon.width(0.17).output(\"mcon.size < 0.17\")\nmcon.space(0.19).output(\"mcon.space < 0.19\")\nmet1.width(0.14).output(\"met1.width < 0.14\")\nmet1.space(0.14).output(\"met1.space < 0.14\")\nmet1.enclosing(mcon, 0.03).output(\"met1.enclosing(mcon) < 0.03\")\nnwell.width(0.84).output(\"nwell.width < 0.84\")\n",
-  "output_rdb": "/home/ig/work/klayout-mcp-test/drc_dev_test.lyrdb",
+  "code": "$feol = \"true\"; $beol = \"true\"; $offgrid = \"true\"\n$input = \"/abs/path/layout.gds\"; $top_cell = \"<CELL>\"; $report = \"/abs/path/report.lyrdb\"\n<canonical deck source>",
+  "output_rdb": "/abs/path/report.lyrdb",
   "result_mode": "summary"
 }
 ```
@@ -248,13 +311,15 @@ project's full deck; keep the call shape.
 Read the verdict from the response:
 
 ```text
-exception == null  AND  rdb_summary.total_items == 0   -> PASS
-otherwise                                              -> FAIL (report categories)
+exception == null  AND  rdb_summary.total_items == 0  AND  categories are PDK rules
+    -> PASS
+otherwise
+    -> FAIL (report categories + deck identity)
 ```
 
 For item locations re-call the same tool with `"result_mode": "full"` and
 read `rdb_summary.items[]`. Never parse the `.lyrdb` yourself.
 
-> Note: this SkyWater-style deck is a test deck, not a foundry signoff deck.
-> Say so when reporting, and never present a hand-written deck's PASS as
+> Note: only the canonical PDK deck can produce a signoff-grade result. If
+> you ran anything else, say so explicitly and do not present its PASS as a
 > tapeout signoff.
