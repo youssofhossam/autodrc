@@ -87,6 +87,7 @@ the transcript and log.
 | `OPENROUTER_SITE_URL` | no | — | Sent as the `HTTP-Referer` attribution header |
 | `OPENROUTER_APP_NAME` | no | `autodrc` | Sent as the `X-Title` attribution header |
 | `LLM_SYSTEM_INSTRUCTION` | no | built-in | Override the system instruction (falls back to `GEMINI_SYSTEM_INSTRUCTION`) |
+| `AGENTS_MD_PATH` | no | `AGENTS.md` | Project instructions appended to the system instruction and re-read on every turn; relative paths resolve against the repo root. `none` disables it |
 | `LLM_TEMPERATURE` | no | SDK default | 0.0–2.0; falls back to `GEMINI_TEMPERATURE` / `OPENROUTER_TEMPERATURE` |
 | `MAX_TOOL_ITERATIONS` | no | `1000` | Model requests per turn before the GUI asks to continue |
 | `MAX_TOOL_RESULT_CHARS` | no | `20000` | Truncate huge MCP results sent to the model |
@@ -165,7 +166,9 @@ and passed back to the model.
   tables, links, blockquotes, inline code, fenced code with syntax
   highlighting), system notices, and inline error cards.
 - **Composer** — multiline, auto-growing input. **Enter** sends;
-  **Shift+Enter** inserts a newline. Send is disabled while a turn is running.
+  **Shift+Enter** inserts a newline. Send is disabled while a turn is running;
+  its place is taken by a **Stop** button that interrupts the assistant
+  (`Esc` as well).
 - **Tool activity** — every MCP call appears as a collapsible card showing the
   server, tool, arguments, status (pending/running/completed/failed), and the
   result. Cards can auto-expand from Settings.
@@ -189,6 +192,7 @@ snapshot.
 | --- | --- |
 | `Enter` | Send the message |
 | `Shift+Enter` | Insert a newline |
+| `Esc` | Stop the running turn |
 | `Ctrl+N` | New conversation |
 | `Ctrl+B` | Show/hide the sidebar |
 | `Ctrl+L` | Focus the composer |
@@ -214,6 +218,7 @@ exception and traceback.
 ├── app/
 │   ├── main.py                 # Qt entry point, logging, startup validation
 │   ├── config.py               # environment settings
+│   ├── instructions.py         # loads AGENTS.md on every turn
 │   ├── agent/
 │   │   ├── controller.py       # manual agentic loop
 │   │   └── events.py           # GUI-facing event dataclasses
@@ -320,6 +325,15 @@ Multiple calls in one response run sequentially because tools may have side
 effects or depend on each other. Unknown tools, invalid arguments, denied
 confirmations, and execution failures all become `{"error": ...}` function
 responses, so the model can correct itself or explain the failure.
+
+### Project instructions
+
+`AGENTS.md` in the repository root is appended to the system instruction and is
+re-read at the start of every turn. Every conversation therefore runs with the
+current rules, edits apply without a restart, and one turn always uses a single
+consistent snapshot. A missing file is not an error: the assistant falls back to
+the built-in instruction. Use `AGENTS_MD_PATH` to point elsewhere, or set it to
+`none` to disable loading.
 
 ### Model providers
 

@@ -94,6 +94,7 @@ imports**. The agent is the only place that understands both sides.
 ├── app/
 │   ├── main.py                 # wiring + entry point
 │   ├── config.py               # environment settings
+│   ├── instructions.py         # AGENTS.md loading, re-read every turn
 │   ├── agent/
 │   │   ├── controller.py       # the manual agentic loop
 │   │   └── events.py           # GUI-facing event dataclasses
@@ -285,6 +286,22 @@ Conversation history is a list of `types.Content`. It spans user turns across
 multiple `send_message()` calls, so the assistant remembers earlier messages
 and earlier tool results.
 
+### Project instructions (`AGENTS.md`)
+
+The harness reads the repository's `AGENTS.md` and appends it to the system
+instruction. It re-reads the file **at the start of every turn**, once per turn
+and before the first model request, so:
+
+- every conversation (new, restored, or switched to in the sidebar) sees the
+  current rules;
+- edits to `AGENTS.md` apply on the next message without restarting the app;
+- a whole turn uses one consistent snapshot, even when it makes several model
+  requests.
+
+A missing or unreadable file never fails a turn: the assistant falls back to the
+built-in instruction and logs a warning. Set `AGENTS_MD_PATH` to point at a
+different file, or to `none` to disable loading.
+
 ---
 
 ## Schema conversion
@@ -414,6 +431,7 @@ The suite covers:
 | GUI conversation switching | `test_new_chat_and_restore_preserve_transcript` |
 | GUI error handling | `test_turn_failure_is_shown_inline_without_crashing` |
 | Schema conversion | `tests/test_schema_conversion.py` |
+| `AGENTS.md` re-read every turn | `tests/test_instructions.py`, `test_project_instructions_are_reread_for_every_turn` |
 | OpenRouter translation and errors | `tests/test_openrouter_client.py` |
 | Provider configuration | `tests/test_config.py` |
 | Markdown rendering and escaping | `tests/test_markdown.py` |

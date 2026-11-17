@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 EventSink = Callable[[AgentEvent], None]
 ConfirmationCallback = Callable[[str, dict[str, Any]], bool]
 ContinueCallback = Callable[[int], bool]
+SystemInstructionProvider = Callable[[], str | None]
 
 
 class AgentError(RuntimeError):
@@ -43,6 +44,7 @@ class LLMClient(Protocol):
         self,
         contents: Sequence[types.Content],
         tool_set: ToolSet,
+        system_instruction: str | None = None,
     ) -> types.GenerateContentResponse: ...
 
     async def aclose(self) -> None: ...
@@ -75,6 +77,7 @@ class AgentController:
         max_tool_result_chars: int = 20_000,
         confirm_tool: ConfirmationCallback | None = None,
         llm_factory: LLMFactory | None = None,
+        system_instruction: SystemInstructionProvider | None = None,
     ) -> None:
         if max_iterations < 1:
             raise ValueError("max_iterations must be at least 1.")
@@ -87,6 +90,7 @@ class AgentController:
         self._max_iterations = max_iterations
         self._max_tool_result_chars = max_tool_result_chars
         self._confirm_tool = confirm_tool
+        self._system_instruction = system_instruction
         self._continue_turn: ContinueCallback | None = None
         self._contents: list[types.Content] = []
         self._request_lock = asyncio.Lock()
@@ -257,6 +261,9 @@ class AgentController:
             self._contents.append(user_content)
             try:
                 return await self._run_turn(emit)
+            except asyncio.CancelledError:
+                self._settle_interrupted_turn(user_content)
+                raise
             except BaseException:
                 # If the turn failed before Gemini produced anything, do not
                 # leave a dangling user message in the history.
@@ -264,11 +271,52 @@ class AgentController:
                     self._contents.pop()
                 raise
 
+    def _settle_interrupted_turn(self, user_content: types.Content) -> None:
+        """Keep the history valid after the user interrupts a turn.
+
+        Stopping can land in the middle of a tool round, which would leave a
+        model content whose function calls never got a response. Gemini rejects
+        such a history, so every unanswered call is closed off with an error
+        response. A turn interrupted before the model replied at all leaves no
+        trace, mirroring the failure path above.
+        """
+
+        if self._contents and self._contents[-1] is user_content:
+            self._contents.pop()
+            return
+        if not self._contents:
+            return
+
+        calls = [
+            part.function_call
+            for part in self._contents[-1].parts or []
+            if part.function_call is not None
+        ]
+        if not calls:
+            return
+        self._contents.append(
+            types.Content(
+                role="user",
+                parts=[
+                    _function_response(
+                        call.name or "",
+                        call.id,
+                        error="The user interrupted this tool call.",
+                    )
+                    for call in calls
+                ],
+            )
+        )
+
     async def _run_turn(self, emit: Callable[[AgentEvent], None]) -> str:
         emit(StatusEvent("Discovering MCP tools..."))
         mcp_tools = await self._mcp.list_tools()
         self._tool_count = len(mcp_tools)
         tool_set = self._llm.build_tools(mcp_tools)
+
+        # Read the project instructions once per turn. Every conversation and
+        # every subsequent turn therefore sees the current AGENTS.md.
+        system_instruction = self._current_system_instruction()
 
         steps = 0
         budget = self._max_iterations
@@ -276,7 +324,9 @@ class AgentController:
             while steps < budget:
                 steps += 1
                 emit(StatusEvent(f"Thinking (step {steps}/{budget})..."))
-                response = await self._llm.generate(self._contents, tool_set)
+                response = await self._llm.generate(
+                    self._contents, tool_set, system_instruction
+                )
                 content = self._extract_content(response)
                 self._contents.append(content)
 
@@ -367,6 +417,19 @@ class AgentController:
         if result.is_error:
             return _function_response(requested_name, call.id, error=text)
         return _function_response(requested_name, call.id, result=text)
+
+    def _current_system_instruction(self) -> str | None:
+        """Ask the provider for the current instruction; never fail a turn."""
+
+        if self._system_instruction is None:
+            return None
+        try:
+            return self._system_instruction()
+        except Exception:
+            logger.exception(
+                "Could not build the system instruction; using the client default."
+            )
+            return None
 
     async def _ask_continue(self, steps: int) -> bool:
         callback = self._continue_turn

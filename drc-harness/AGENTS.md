@@ -18,13 +18,12 @@ through the `klayout` MCP server (klink). There is no other allowed path.**
    - no parsing `.gds`, `.lyrdb`, or `.lvsdb` with Python to "get the answer"
    If a task seems impossible through the MCP, **stop and report the missing
    capability** — do not fall back to Python.
-3. **Read the skills before acting.** They live in this directory and are
+3. **Read the skill before acting.** It lives in this directory and is
    authoritative for workflow details:
    - `.agents/skills/klayout/SKILL.md`
-   - `.agents/skills/klayout-gdsfactory/SKILL.md`
-   Read the relevant one(s) at the start of any non-trivial task. The
-   `allowed-tools: bash python` line in those skill front-matter does **not**
-   override rule 2 — in this repo the skills are knowledge, the MCP is the
+   Read it at the start of any non-trivial task. The
+   `allowed-tools: bash python` line in its skill front-matter does **not**
+   override rule 2 — in this repo the skill is knowledge, the MCP is the
    only execution surface.
 4. **Structured state is the source of truth**, not screenshots and not
    guesses: `layout.info`, `cell.list` / `cell.tree`, `layer.list`,

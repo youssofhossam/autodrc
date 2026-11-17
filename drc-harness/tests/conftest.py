@@ -74,6 +74,7 @@ class ScriptedLLM:
         self._responses = list(responses)
         self.requests: list[list[types.Content]] = []
         self.tool_sets: list[GeminiToolSet] = []
+        self.system_instructions: list[str | None] = []
         self.closed = False
         self.model = "scripted-model"
 
@@ -87,9 +88,11 @@ class ScriptedLLM:
         self,
         contents: Sequence[types.Content],
         tool_set: GeminiToolSet,
+        system_instruction: str | None = None,
     ) -> types.GenerateContentResponse:
         self.requests.append([content.model_copy(deep=True) for content in contents])
         self.tool_sets.append(tool_set)
+        self.system_instructions.append(system_instruction)
         if not self._responses:
             raise AssertionError("ScriptedLLM ran out of responses.")
         response = self._responses.pop(0)

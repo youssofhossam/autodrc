@@ -244,6 +244,92 @@ def test_turn_failure_is_shown_inline_without_crashing(
     assert win._status_pill.text.text() == "Error"
 
 
+class SlowAgent(FakeAgent):
+    """A turn that keeps running until it is cancelled."""
+
+    async def send_message(
+        self,
+        text: str,
+        on_event: Callable[[AgentEvent], None] | None = None,
+    ) -> str:
+        self.calls.append(text)
+        emit = on_event or (lambda _event: None)
+        emit(StatusEvent("Thinking (step 1/2)..."))
+        await asyncio.sleep(30)
+        return "never reached"
+
+
+def _make_window(qapp: QApplication, agent: FakeAgent) -> ChatWindow:
+    QSettings("autodrc", "autodrc").clear()
+    win = ChatWindow(agent, _info(), confirm_tool_calls=False)
+    win.resize(1100, 760)
+    win.show()
+    qapp.processEvents()
+    return win
+
+
+def test_stop_button_replaces_send_while_the_turn_runs(qapp: QApplication) -> None:
+    win = _make_window(qapp, SlowAgent())
+    try:
+        win.composer.set_text("Will be sent")
+        assert win.composer.send_button.isVisibleTo(win) is True
+        assert win.composer.stop_button.isVisibleTo(win) is False
+
+        win._send_message("Please think for a while")
+        qapp.processEvents()
+
+        assert win._busy is True
+        assert win.composer.stop_button.isVisibleTo(win) is True
+        assert win.composer.stop_button.isEnabled() is True
+        assert win.composer.send_button.isVisibleTo(win) is False
+
+        win._stop_turn()
+        assert _wait_for(qapp, lambda: not win._busy)
+    finally:
+        win.close()
+        qapp.processEvents()
+
+
+def test_stop_button_interrupts_the_turn_and_frees_the_composer(
+    qapp: QApplication,
+) -> None:
+    win = _make_window(qapp, SlowAgent())
+    try:
+        assert _wait_for(qapp, lambda: win._mcp_connected is True)
+        win._send_message("Please think for a while")
+        qapp.processEvents()
+        assert win._busy is True
+
+        win.composer.stop_button.click()
+
+        assert _wait_for(qapp, lambda: not win._busy)
+        assert win._status_pill.text.text() == "Stopped"
+        assert win.composer.stop_button.isVisibleTo(win) is False
+        assert win.composer.send_button.isVisibleTo(win) is True
+        assert win._sidebar.list.isEnabled() is True
+
+        conversation = win._active_conversation()
+        assert conversation is not None
+        assert conversation.items[-1].kind == "system"
+        assert "Stopped" in conversation.items[-1].text
+
+        # The agent is idle again: a new message is accepted immediately.
+        win.composer.set_text("Second question")
+        assert win.composer.send_button.isEnabled() is True
+    finally:
+        win.close()
+        qapp.processEvents()
+
+
+def test_stop_is_ignored_when_no_turn_is_running(window) -> None:
+    win, _agent = window
+    win._stop_turn()
+
+    assert win._busy is False
+    assert win._status_pill.text.text() in {"Ready", "Connecting…", "MCP unavailable"}
+    assert win.composer.stop_button.isVisibleTo(win) is False
+
+
 def test_confirmation_is_auto_approved_when_disabled(window) -> None:
     win, agent = window
     assert agent.confirmation_callback is not None

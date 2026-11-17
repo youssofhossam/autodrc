@@ -58,3 +58,27 @@ def test_done_and_error_callbacks_run() -> None:
         assert isinstance(errors[0], ValueError)
     finally:
         worker.stop()
+
+
+def test_cancelling_a_coroutine_runs_the_cancel_callback() -> None:
+    worker = AsyncWorker()
+    cancelled = threading.Event()
+    finished: list[str] = []
+    try:
+
+        async def run_forever() -> str:
+            await asyncio.Event().wait()
+            return "unreachable"
+
+        future = worker.submit(
+            run_forever(),
+            on_done=finished.append,
+            on_cancelled=cancelled.set,
+        )
+        time.sleep(0.05)
+
+        assert future.cancel() is True
+        assert cancelled.wait(timeout=2)
+        assert finished == []
+    finally:
+        worker.stop()

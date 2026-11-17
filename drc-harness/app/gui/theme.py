@@ -482,6 +482,26 @@ def build_stylesheet() -> str:
         border: 1px solid {c["border"]};
     }}
 
+    QToolButton#StopButton {{
+        background-color: {c["panel_alt"]};
+        border: 1px solid {c["border_strong"]};
+        border-radius: 9px;
+    }}
+
+    QToolButton#StopButton:hover {{
+        background-color: {c["danger_soft"]};
+        border-color: {c["danger_border"]};
+    }}
+
+    QToolButton#StopButton:pressed {{
+        background-color: {c["danger_border"]};
+    }}
+
+    QToolButton#StopButton:disabled {{
+        background-color: {c["panel"]};
+        border-color: {c["border"]};
+    }}
+
     /* ------------------------------------------------------------- dialogs */
     QDialog {{
         background-color: {c["bg"]};

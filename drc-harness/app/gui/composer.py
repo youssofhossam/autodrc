@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.gui.icons import icon
+from app.gui.theme import COLORS
 
 _MIN_HEIGHT = 42
 _MAX_HEIGHT = 170
@@ -37,10 +38,12 @@ class ComposerInput(QPlainTextEdit):
 
 class Composer(QWidget):
     submitted = Signal(str)
+    stop_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._busy = False
+        self._stopping = False
         self._resize_pending = False
 
         outer = QVBoxLayout(self)
@@ -91,6 +94,19 @@ class Composer(QWidget):
         self.send_button.clicked.connect(self._submit)
         bottom.addWidget(self.send_button, 0, Qt.AlignmentFlag.AlignBottom)
 
+        # Occupies the send button's place while a turn is running.
+        self.stop_button = QToolButton()
+        self.stop_button.setObjectName("StopButton")
+        self.stop_button.setIcon(icon("stop", COLORS["danger"], 18))
+        self.stop_button.setIconSize(QSize(18, 18))
+        self.stop_button.setFixedSize(34, 34)
+        self.stop_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stop_button.setToolTip("Stop the assistant (Esc)")
+        self.stop_button.setAccessibleName("Stop the assistant")
+        self.stop_button.clicked.connect(self._request_stop)
+        self.stop_button.hide()
+        bottom.addWidget(self.stop_button, 0, Qt.AlignmentFlag.AlignBottom)
+
         card_layout.addLayout(bottom)
         outer.addWidget(self.card)
 
@@ -114,12 +130,31 @@ class Composer(QWidget):
 
     def set_busy(self, busy: bool) -> None:
         self._busy = bool(busy)
+        self._stopping = False
         self.input.setPlaceholderText(
             "The assistant is working…" if busy else "Message the assistant…"
         )
+        self.hint.setText(
+            "Enter to send  ·  Esc to stop the assistant"
+            if busy
+            else "Enter to send  ·  Shift+Enter for a new line"
+        )
+        # The stop button takes the send button's place during a turn.
+        self.send_button.setVisible(not busy)
+        self.stop_button.setVisible(bool(busy))
+        self.stop_button.setEnabled(bool(busy))
+        self.stop_button.setToolTip("Stop the assistant (Esc)")
         self._update_send_enabled()
         if not busy:
             self.input.setFocus()
+
+    def set_stopping(self) -> None:
+        """Show that a stop request is in flight; ignore further clicks."""
+
+        self._stopping = True
+        self.stop_button.setEnabled(False)
+        self.stop_button.setToolTip("Stopping…")
+        self.hint.setText("Stopping the assistant…")
 
     def focus_input(self) -> None:
         self.input.setFocus()
@@ -140,6 +175,11 @@ class Composer(QWidget):
         if not text:
             return
         self.submitted.emit(text)
+
+    def _request_stop(self) -> None:
+        if not self._busy or self._stopping:
+            return
+        self.stop_requested.emit()
 
     def _schedule_resize(self) -> None:
         if self._resize_pending:

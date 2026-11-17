@@ -174,6 +174,7 @@ class ChatWindow(QMainWindow):
         self._bridge.set_confirmation_enabled(self._confirm_enabled)
         self._bridge.event.connect(self._on_agent_event)
         self._bridge.turn_finished.connect(self._on_turn_finished)
+        self._bridge.turn_cancelled.connect(self._on_turn_cancelled)
         self._bridge.turn_failed.connect(self._on_turn_failed)
         self._bridge.connection_ready.connect(self._on_connection_ready)
         self._bridge.connection_failed.connect(self._on_connection_failed)
@@ -282,6 +283,7 @@ class ChatWindow(QMainWindow):
         self.composer = Composer()
         self.composer.setMaximumWidth(1000)
         self.composer.submitted.connect(self._send_message)
+        self.composer.stop_requested.connect(self._stop_turn)
         composer_layout.addStretch(1)
         composer_layout.addWidget(self.composer, 8)
         composer_layout.addStretch(1)
@@ -297,6 +299,7 @@ class ChatWindow(QMainWindow):
             ("Ctrl+,", self._open_settings),
             ("Ctrl+B", self._toggle_sidebar),
             ("Ctrl+L", self.composer.focus_input),
+            ("Esc", self._stop_turn),
         ):
             shortcut = QShortcut(QKeySequence(keys), self)
             shortcut.activated.connect(handler)
@@ -499,6 +502,19 @@ class ChatWindow(QMainWindow):
         self._set_busy(True, "Thinking…")
         self._bridge.submit_message(text)
 
+    # ------------------------------------------------------------- stopping
+
+    def _stop_turn(self) -> None:
+        """Interrupt the running turn (stop button or Esc)."""
+
+        if not self._busy or self._closing:
+            return
+        if not self._bridge.cancel_turn():
+            # The turn had already finished; its completion is on the way.
+            return
+        self._set_status("Stopping…", "warning")
+        self.composer.set_stopping()
+
     # -------------------------------------------------------------- events
 
     def _on_agent_event(self, event: AgentEvent) -> None:
@@ -516,6 +532,10 @@ class ChatWindow(QMainWindow):
     def _handle_agent_event(self, event: AgentEvent) -> None:
         conversation = self._active_conversation()
         if conversation is None:
+            return
+        if not self._busy:
+            # Late events from an interrupted turn must not reopen the turn.
+            logger.debug("Ignoring a stale agent event: %r", event)
             return
 
         if isinstance(event, StatusEvent):
@@ -557,6 +577,37 @@ class ChatWindow(QMainWindow):
                 self._set_status(f"Tool failed: {event.name}", "warning")
             else:
                 self._set_status("Analyzing tool result…", "busy")
+
+    def _on_turn_cancelled(self) -> None:
+        if self._closing:
+            return
+        self._interrupt_running_tools()
+        conversation = self._active_conversation()
+        if conversation is not None:
+            conversation.items.append(
+                MessageItem(kind="system", text="Stopped by the user.")
+            )
+        self._chat.add_system("Stopped by the user.")
+        self._current_assistant = None
+        self._current_assistant_item = None
+        self._turn_had_assistant = False
+        self._set_busy(False, "Stopped")
+        self._save_snapshot()
+        self.composer.focus_input()
+
+    def _interrupt_running_tools(self) -> None:
+        """Mark tool cards left in flight by the interruption as stopped."""
+
+        conversation = self._active_conversation()
+        if conversation is None:
+            return
+        for item in conversation.items:
+            if not isinstance(item, ToolItem):
+                continue
+            if item.status not in {"pending", "running"}:
+                continue
+            self._chat.complete_tool(item.name, "Stopped by the user.", True)
+            item.status = "failed"
 
     def _on_turn_finished(self, result: str) -> None:
         if self._closing:

@@ -70,11 +70,21 @@ class GeminiClient:
         self,
         contents: Sequence[types.Content],
         tool_set: GeminiToolSet,
+        system_instruction: str | None = None,
     ) -> types.GenerateContentResponse:
-        """Send the complete conversation to Gemini and return its response."""
+        """Send the complete conversation to Gemini and return its response.
 
+        ``system_instruction`` overrides the client's default for this request,
+        which lets the controller re-read ``AGENTS.md`` on every turn.
+        """
+
+        instruction = (
+            self._system_instruction
+            if system_instruction is None
+            else system_instruction
+        )
         config_args: dict[str, object] = {
-            "system_instruction": self._system_instruction,
+            "system_instruction": instruction,
             "temperature": self._temperature,
             # We execute tools ourselves through MCP. Automatic function
             # calling is disabled so the SDK cannot run anything implicitly.

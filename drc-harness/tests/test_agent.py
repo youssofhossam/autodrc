@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from google.genai import types
 
@@ -10,6 +12,7 @@ from app.agent.events import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from app.instructions import system_instruction_provider
 from app.mcp_client.client import MCPConnectionError, ToolResult
 from tests.conftest import (
     FakeMCP,
@@ -255,6 +258,77 @@ async def test_declining_to_continue_stops_the_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_project_instructions_are_reread_for_every_turn(tmp_path) -> None:
+    path = tmp_path / "AGENTS.md"
+    path.write_text("First rule.", encoding="utf-8")
+    llm = ScriptedLLM([text_response("First answer."), text_response("Second answer.")])
+    agent = AgentController(
+        llm,
+        FakeMCP(),
+        system_instruction=system_instruction_provider("Base instruction.", path),
+    )
+
+    await agent.send_message("First question")
+    path.write_text("Second rule.", encoding="utf-8")
+    await agent.send_message("Second question")
+
+    first, second = llm.system_instructions
+    assert first.startswith("Base instruction.")
+    assert "First rule." in first
+    assert "First rule." not in second
+    assert "Second rule." in second
+
+
+@pytest.mark.asyncio
+async def test_one_turn_uses_a_single_instruction_snapshot(tmp_path) -> None:
+    path = tmp_path / "AGENTS.md"
+    path.write_text("First rule.", encoding="utf-8")
+    calls = {"count": 0}
+
+    def provider() -> str:
+        calls["count"] += 1
+        return system_instruction_provider("Base.", path)()
+
+    llm = ScriptedLLM(
+        [
+            tool_call_response(function_call("echo", {"text": "hi"})),
+            text_response("Done."),
+        ]
+    )
+    agent = AgentController(llm, FakeMCP(), system_instruction=provider)
+
+    await agent.send_message("Use the tool")
+
+    assert calls["count"] == 1
+    assert llm.system_instructions == [llm.system_instructions[0]] * 2
+    assert "First rule." in llm.system_instructions[0]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_instruction_provider_does_not_fail_the_turn() -> None:
+    def provider() -> str:
+        raise OSError("disk on fire")
+
+    llm = ScriptedLLM([text_response("Still here.")])
+    agent = AgentController(llm, FakeMCP(), system_instruction=provider)
+
+    answer = await agent.send_message("Hello")
+
+    assert answer == "Still here."
+    assert llm.system_instructions == [None]
+
+
+@pytest.mark.asyncio
+async def test_without_a_provider_the_client_default_is_used() -> None:
+    llm = ScriptedLLM([text_response("Hello.")])
+    agent = AgentController(llm, FakeMCP())
+
+    await agent.send_message("Hi")
+
+    assert llm.system_instructions == [None]
+
+
+@pytest.mark.asyncio
 async def test_conversation_context_preserved_across_messages() -> None:
     llm = ScriptedLLM([text_response("First answer."), text_response("Second answer.")])
     mcp = FakeMCP()
@@ -379,6 +453,59 @@ async def test_large_tool_result_is_truncated_before_gemini() -> None:
     response = _function_responses(list(agent.history))[0]
     assert len(response.response["result"]) < 200
     assert "truncated 900 characters" in response.response["result"]
+
+
+class _BlockingMCP(FakeMCP):
+    """A tool server whose call never returns until it is cancelled."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+
+    async def call_tool(self, tool, arguments):
+        self.started.set()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_interrupting_a_tool_call_leaves_a_valid_history() -> None:
+    llm = ScriptedLLM(
+        [
+            tool_call_response(
+                function_call("echo", {"text": "x"}, call_id="call-7")
+            ),
+            text_response("Recovered."),
+        ]
+    )
+    mcp = _BlockingMCP()
+    agent = AgentController(llm, mcp)
+
+    turn = asyncio.create_task(agent.send_message("Run the tool"))
+    await asyncio.wait_for(mcp.started.wait(), timeout=2)
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+
+    # The unanswered function call is closed off so the next turn is accepted.
+    assert [content.role for content in agent.history] == ["user", "model", "user"]
+    responses = _function_responses(list(agent.history))
+    assert len(responses) == 1
+    assert responses[0].name == "echo"
+    assert responses[0].id == "call-7"
+    assert "interrupted" in responses[0].response["error"]
+
+    assert await agent.send_message("Try again") == "Recovered."
+
+
+@pytest.mark.asyncio
+async def test_interrupting_before_a_reply_drops_the_user_message() -> None:
+    llm = ScriptedLLM([asyncio.CancelledError()])
+    agent = AgentController(llm, FakeMCP())
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.send_message("Never answered")
+
+    assert agent.history == ()
 
 
 @pytest.mark.asyncio

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.config import ConfigError, Settings
+from app.instructions import DEFAULT_INSTRUCTIONS_PATH
 
 
 def _base_env(**overrides: str) -> dict[str, str]:
@@ -61,6 +64,28 @@ def test_system_instruction_prefers_the_generic_variable() -> None:
         Settings.from_env(_base_env(GEMINI_SYSTEM_INSTRUCTION="legacy")).system_instruction
         == "legacy"
     )
+
+
+def test_project_instructions_default_to_the_repository_agents_file() -> None:
+    settings = Settings.from_env(_base_env())
+
+    assert settings.instructions_path == DEFAULT_INSTRUCTIONS_PATH
+    assert settings.instructions_path.name == "AGENTS.md"
+
+
+def test_project_instructions_path_can_be_overridden() -> None:
+    settings = Settings.from_env(_base_env(AGENTS_MD_PATH="docs/AGENTS.md"))
+
+    assert settings.instructions_path == (
+        DEFAULT_INSTRUCTIONS_PATH.parent / "docs/AGENTS.md"
+    )
+
+    absolute = Settings.from_env(_base_env(AGENTS_MD_PATH="/tmp/other-AGENTS.md"))
+    assert absolute.instructions_path == Path("/tmp/other-AGENTS.md")
+
+
+def test_project_instructions_can_be_disabled() -> None:
+    assert Settings.from_env(_base_env(AGENTS_MD_PATH="none")).instructions_path is None
 
 
 def test_confirmation_can_be_disabled() -> None:

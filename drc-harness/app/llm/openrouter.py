@@ -103,12 +103,22 @@ class OpenRouterClient:
         self,
         contents: Sequence[types.Content],
         tool_set: ToolSet,
+        system_instruction: str | None = None,
     ) -> types.GenerateContentResponse:
-        """Send the complete conversation to OpenRouter and return its response."""
+        """Send the complete conversation to OpenRouter and return its response.
 
+        ``system_instruction`` overrides the client's default for this request,
+        which lets the controller re-read ``AGENTS.md`` on every turn.
+        """
+
+        instruction = (
+            self._system_instruction
+            if system_instruction is None
+            else system_instruction
+        )
         request: dict[str, Any] = {
             "model": self._model,
-            "messages": _to_openai_messages(self._system_instruction, contents),
+            "messages": _to_openai_messages(instruction, contents),
         }
         if tool_set.specs:
             request["tools"] = [

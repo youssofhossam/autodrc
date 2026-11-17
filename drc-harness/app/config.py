@@ -10,6 +10,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.instructions import DEFAULT_INSTRUCTIONS_PATH
+
 DEFAULT_SYSTEM_INSTRUCTION = (
     "You are a helpful desktop assistant with access to tools exposed by local "
     "MCP servers. Use a tool only when it is needed to answer the user. Tool "
@@ -46,6 +48,7 @@ class Settings:
     openrouter_site_url: str
     openrouter_app_name: str
     system_instruction: str
+    instructions_path: Path | None
     temperature: float | None
     max_tool_iterations: int
     max_tool_result_chars: int
@@ -94,6 +97,8 @@ class Settings:
             or DEFAULT_SYSTEM_INSTRUCTION
         )
 
+        instructions_path = _instructions_path(source.get("AGENTS_MD_PATH"))
+
         temperature = _optional_float(
             _temperature_setting(source, provider), "LLM_TEMPERATURE"
         )
@@ -135,6 +140,7 @@ class Settings:
             openrouter_site_url=site_url,
             openrouter_app_name=app_name,
             system_instruction=system_instruction,
+            instructions_path=instructions_path,
             temperature=temperature,
             max_tool_iterations=max_iterations,
             max_tool_result_chars=max_result_chars,
@@ -173,6 +179,22 @@ class Settings:
             else self.gemini_api_key
         )
         return bool(key)
+
+
+def _instructions_path(raw: str | None) -> Path | None:
+    """Path of the project instructions re-read on every turn.
+
+    Relative paths are resolved against the repository root, not the process
+    working directory. Set ``AGENTS_MD_PATH=none`` to disable loading.
+    """
+
+    value = (raw or "").strip()
+    if not value:
+        return DEFAULT_INSTRUCTIONS_PATH
+    if value.lower() in {"none", "off", "-"}:
+        return None
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else DEFAULT_INSTRUCTIONS_PATH.parent / path
 
 
 def _parse_provider(raw: str | None) -> str:

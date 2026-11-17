@@ -23,6 +23,7 @@ from app.gui.icons import app_icon
 from app.gui.models import AppInfo, ProviderInfo
 from app.gui.theme import apply_theme
 from app.gui.window import ChatWindow
+from app.instructions import system_instruction_provider
 from app.llm import create_llm
 from app.llm.gemini import GeminiError
 from app.llm.openrouter import OpenRouterError
@@ -112,6 +113,9 @@ def main() -> int:
         max_tool_result_chars=settings.max_tool_result_chars,
         llm_factory=lambda provider, model: create_llm(
             settings, provider=provider, model=model
+        ),
+        system_instruction=system_instruction_provider(
+            settings.system_instruction, settings.instructions_path
         ),
     )
 

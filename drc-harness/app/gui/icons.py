@@ -148,6 +148,12 @@ def _draw(painter: QPainter, name: str, color: QColor, size: float) -> None:
         painter.drawLine(QPointF(s / 2, s * 0.35), QPointF(s / 2, s * 0.56))
         painter.setBrush(color)
         painter.drawEllipse(QPointF(s / 2, s * 0.7), s * 0.035, s * 0.035)
+    elif name == "stop":
+        painter.setBrush(color)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(
+            QRectF(s * 0.3, s * 0.3, s * 0.4, s * 0.4), s * 0.08, s * 0.08
+        )
     elif name == "spark":
         cx = cy = s / 2
         outer = s * 0.28

@@ -51,8 +51,13 @@ class AsyncWorker:
         *,
         on_done: Callable[[T], None] | None = None,
         on_error: Callable[[BaseException], None] | None = None,
+        on_cancelled: Callable[[], None] | None = None,
     ) -> concurrent.futures.Future[T]:
-        """Schedule a coroutine without blocking the caller."""
+        """Schedule a coroutine without blocking the caller.
+
+        Cancelling the returned future aborts the coroutine; ``on_cancelled``
+        then runs instead of ``on_done``/``on_error``.
+        """
 
         if self._stopped:
             coro.close()
@@ -64,6 +69,11 @@ class AsyncWorker:
             try:
                 result = completed.result()
             except concurrent.futures.CancelledError:
+                if on_cancelled is not None:
+                    try:
+                        on_cancelled()
+                    except Exception:
+                        logger.exception("Worker cancel callback failed.")
                 return
             except BaseException as exc:  # noqa: BLE001 - delivered to GUI callback
                 if on_error is not None:

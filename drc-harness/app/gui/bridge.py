@@ -7,6 +7,8 @@ Qt automatically delivers them to the main thread through queued connections.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import logging
 import threading
 from typing import Any
@@ -66,6 +68,7 @@ class AgentBridge(QObject):
     event = Signal(object)
     turn_finished = Signal(str)
     turn_failed = Signal(str, bool)
+    turn_cancelled = Signal()
     connection_ready = Signal()
     connection_failed = Signal(str)
     confirmation_requested = Signal(object)
@@ -80,6 +83,8 @@ class AgentBridge(QObject):
         self._confirm_enabled = True
         self._closing = False
         self._connected = False
+        self._turn_future: concurrent.futures.Future[str] | None = None
+        self._turn_task: asyncio.Task[str] | None = None
 
         self._agent.set_confirmation_callback(self._confirm)
         self._agent.set_continue_callback(self._ask_continue)
@@ -117,19 +122,62 @@ class AgentBridge(QObject):
         if self._closing:
             return
         try:
-            self._worker.submit(
-                self._agent.send_message(text, self._emit_event),
-                on_done=lambda result: self.turn_finished.emit(result or ""),
-                on_error=lambda exc: self._turn_error(exc),
+            self._turn_future = self._worker.submit(
+                self._run_turn(text),
+                on_done=self._turn_done,
+                on_error=self._turn_error,
+                on_cancelled=self._turn_cancelled,
             )
         except RuntimeError as exc:
             self.turn_failed.emit(str(exc), False)
+
+    async def _run_turn(self, text: str) -> str:
+        """Runs on the worker loop; the task handle lets the GUI cancel it."""
+
+        task = asyncio.current_task()
+        self._turn_task = task
+        try:
+            return await self._agent.send_message(text, self._emit_event)
+        finally:
+            if self._turn_task is task:
+                self._turn_task = None
+
+    def cancel_turn(self) -> bool:
+        """Interrupt the running turn.
+
+        The cancellation is delivered on the worker loop, so the turn keeps the
+        GUI in its stopping state until the coroutine has actually unwound (and
+        released the agent's request lock). Returns True when a request was
+        sent; the ``turn_cancelled`` signal follows once the turn ends.
+        """
+
+        task = self._turn_task
+        if task is not None and not task.done():
+            task.get_loop().call_soon_threadsafe(task.cancel)
+            logger.info("Cancelling the agent turn.")
+            return True
+        # The task may not exist yet if the user stops immediately after
+        # sending; cancelling the future stops it as soon as it is created.
+        future = self._turn_future
+        if future is not None:
+            return bool(future.cancel())
+        return False
 
     def _emit_event(self, event: AgentEvent) -> None:
         # Called on the worker thread. Signal emission is thread-safe.
         self.event.emit(event)
 
+    def _turn_done(self, result: str | None) -> None:
+        self._turn_future = None
+        self.turn_finished.emit(result or "")
+
+    def _turn_cancelled(self) -> None:
+        self._turn_future = None
+        logger.info("Agent turn interrupted by the user.")
+        self.turn_cancelled.emit()
+
     def _turn_error(self, exc: BaseException) -> None:
+        self._turn_future = None
         message = describe_exception(exc)
         logger.error(
             "Agent turn failed: %s",
@@ -206,6 +254,8 @@ class AgentBridge(QObject):
             return
         self._closing = True
         self._deny_pending()
+        # Abort an in-flight model request before asking the agent to close.
+        self.cancel_turn()
         try:
             future = self._worker.submit(self._agent.shutdown())
             future.result(timeout=timeout)
